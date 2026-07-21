@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+.git
+.dockerignore
+*.log
+
+# Ignora a pasta temporária inteira e todos os arquivos gerados localmente
+tmp/

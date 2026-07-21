@@ -1,0 +1,23 @@
+# Ignorar arquivos do Aider (chats, logs e configs)
+.aider*
+
+# Ignorar variáveis de ambiente e chaves secretas (CRÍTICO)
+.env
+.env.*
+
+# Ignorar ambientes virtuais locais
+venv/
+.venv/
+
+# Ignorar caches do Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Manter a estrutura da pasta temporária limpa (salva apenas o .gitkeep)
+tmp/*
+!tmp/.gitkeep
+
+# Ignorar arquivos de sistema e IDEs
+.DS_Store
+.vscode/
