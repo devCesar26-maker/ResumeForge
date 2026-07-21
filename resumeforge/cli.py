@@ -8,7 +8,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from .config import DEFAULT_RESUME_PATH, DATA_DIR, OUTPUT_DIR
+# Importando os limiares do config.py em vez de deixar hardcoded
+from .config import DEFAULT_RESUME_PATH, DATA_DIR, OUTPUT_DIR, MATCH_THRESHOLD_LOW
 from .models import ResumeData, MatchResult, JobPosting
 from .resume_parser import parse_resume
 from .scraper import scrape_job, read_job_from_file
@@ -39,7 +40,7 @@ def _load_resume(resume_path: Path) -> tuple[str, ResumeData | None]:
 
 
 def _get_job_text(url: str, paste: bool) -> str:
-    """Obtém o texto da vaga."""
+    """Obtém o texto da vaga de forma resiliente."""
     if paste:
         console.print("[cyan]Cole o texto da vaga abaixo e digite 'FIM' em uma linha vazia para encerrar:[/cyan]")
         lines = []
@@ -65,13 +66,12 @@ def _get_job_text(url: str, paste: bool) -> str:
 
 def _display_match_result(match: MatchResult, job: JobPosting):
     """Exibe o resultado do match no terminal de forma rica."""
-    color = "green" if match.score >= 70 else "yellow" if match.score >= 40 else "red"
+    color = "green" if match.score >= 70 else "yellow" if match.score >= MATCH_THRESHOLD_LOW else "red"
     
     table = Table(show_header=False, box=None)
     table.add_column("Propriedade", style="bold cyan")
     table.add_column("Valor")
     
-    # Proteção caso campos venham nulos da IA
     vaga_titulo = job.title if job.title else "Não Identificado"
     vaga_empresa = job.company if job.company else "Empresa Oculta"
     
@@ -137,8 +137,9 @@ def tailor(url: str, paste: bool, resume: Path, force: bool):
         
     _display_match_result(result, job)
     
-    if result.score < 40 and not force:
-        console.print("\n[bold red]⚠️ Score baixo (<40). O currículo não será gerado automaticamente para esta vaga.[/bold red]")
+    # Usa a constante do config.py
+    if result.score < MATCH_THRESHOLD_LOW and not force:
+        console.print(f"\n[bold red]⚠️ Score baixo (<{MATCH_THRESHOLD_LOW}). O currículo não será gerado automaticamente para esta vaga.[/bold red]")
         console.print("Use a flag [cyan]--force[/cyan] se quiser forçar a reescrita do documento.")
         return
         
@@ -149,9 +150,9 @@ def tailor(url: str, paste: bool, resume: Path, force: bool):
         letter_text = generate_cover_letter(raw_resume, job, result)
 
     with console.status("[bold green]Compilando estruturas LaTeX e gerando PDF..."):
-        # Garante string válida para o nome do arquivo mesmo se a IA retornar campos vazios
-        company_clean = job.company if job.company else "empresa_vaga"
-        company_slug = "".join(c for c in company_clean if c.isalnum()).lower()
+        # Tratamento de fallback para caso o nome da empresa seja vazio/inválido
+        company_clean = job.company if job.company else "vaga"
+        company_slug = "".join(c for c in company_clean if c.isalnum()).lower() or "vaga"
         output_name = f"cv_{company_slug}"
         
         tex_path = generate_latex(tailored_data, output_name)

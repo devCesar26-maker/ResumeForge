@@ -6,7 +6,7 @@ from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from pydantic import ValidationError
-
+from google.genai.errors import APIError
 
 from resumeforge.config import (
     DATA_DIR, 
@@ -20,7 +20,12 @@ from resumeforge.config import (
 )
 from resumeforge.resume_parser import parse_resume
 from resumeforge.scraper import scrape_job
-from resumeforge.analyzer import parse_job_posting, analyze_match, generate_tailored_resume, generate_cover_letter
+from resumeforge.analyzer import (
+    parse_job_posting, 
+    analyze_match, 
+    generate_tailored_resume, 
+    generate_cover_letter
+)
 from resumeforge.generator import generate_latex, compile_pdf
 from resumeforge.word_generator import generate_word
 
@@ -46,7 +51,7 @@ def index():
 
 @app.route('/api/scrape', methods=['POST'])
 def api_scrape():
-    data = request.json
+    data = request.json or {}
     url = data.get('url')
     if not url:
         return jsonify({'error': 'URL não informada'}), 400
@@ -55,7 +60,7 @@ def api_scrape():
         return jsonify({'text': extracted_text})
     except Exception as e:
         print(f"\n[Erro Scrape]: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f'Não foi possível extrair o texto da vaga: {str(e)}'}), 500
 
 
 @app.route('/api/analyze', methods=['POST'])
@@ -72,7 +77,6 @@ def api_analyze():
         return jsonify({'error': 'Texto da vaga não informado.'}), 400
         
     try:
-        # Garante a existência da pasta caso o Render tenha resetado o app recentemente
         UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
         
         filename = secure_filename(file.filename)
@@ -101,12 +105,17 @@ def api_analyze():
         # 3. Match via Gemini
         try:
             match = analyze_match(raw_resume, job, resume_data)
+        except APIError as e:
+            print(f"[Erro API Gemini no Match]: {e}")
+            if "503" in str(e) or "429" in str(e) or "resourceexhausted" in str(e).lower():
+                return jsonify({'error': 'Serviço da IA ocupado ou cota temporariamente excedida. Aguarde 20 segundos e tente novamente.'}), 503
+            return jsonify({'error': f'Erro na comunicação com a IA do Gemini: {str(e)}'}), 502
         except ValidationError as ve:
             print(f"[Erro Validação Match]: {ve}")
             return jsonify({'error': 'Erro de validação nos dados de compatibilidade gerados pela IA.'}), 502
         except Exception as e:
             print(f"[Erro Analyze Match]: {e}")
-            return jsonify({'error': f'Falha na análise de compatibilidade (Gemini): {str(e)}'}), 502
+            return jsonify({'error': f'Falha na análise de compatibilidade: {str(e)}'}), 502
         
         return jsonify({
             'success': True,
@@ -130,32 +139,30 @@ def api_analyze():
 
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
-    data = request.json
+    data = request.json or {}
     resume_path = Path(data.get('resume_path', ''))
     job_text = data.get('job_text', '')
     
-    # Defesa crucial para arquitetura sem banco: verifica se o arquivo físico ainda existe em tmp/
     if not resume_path.exists() or not job_text:
         return jsonify({
             'error': 'Sessão expirada ou arquivo temporário removido. Por favor, faça o upload do currículo novamente.'
         }), 400
         
     try:
-        # Garante a existência da pasta de outputs caso tenha sido limpa pelo servidor
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Recupera dados processando novamente
+        # Recupera o parse básico do currículo e da vaga
         raw_resume, resume_data = parse_resume(resume_path)
         job = parse_job_posting(job_text)
+        
+        # Recria o objeto de match sem reprocessar se necessário
         match = analyze_match(raw_resume, job, resume_data)
         
-        # Gera carta de apresentação
+        # Gera carta de apresentação e currículo adaptado
         cover_letter = generate_cover_letter(raw_resume, job, match)
-        
-        # Adapta currículo
         tailored_data = generate_tailored_resume(raw_resume, job, match, resume_data)
         
-        # Nome do arquivo de saída limpo
+        # Nome do arquivo de saída
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
         if not company_slug:
             company_slug = "vaga"
@@ -175,6 +182,9 @@ def api_generate():
             }
         })
         
+    except APIError as e:
+        print(f"\n[Erro API Gemini na Geração]: {e}")
+        return jsonify({'error': 'A IA demorou a responder ou a cota esgotou. Tente clicar em gerar novamente em instantes.'}), 503
     except Exception as e:
         print(f"\n[Erro Geração de Documentos]: {e}")
         return jsonify({'error': f'Falha ao gerar os documentos customizados: {str(e)}'}), 500

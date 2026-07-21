@@ -1,9 +1,10 @@
 """
 Analisador híbrido e agnóstico: Groq (Velocidade no Parse) + Google Gemini (Rigor e Ajuste Dinâmico).
-Suporta rotação dinâmica de múltiplas chaves de API (Failover) para contornar Rate Limits (429).
+Suporta rotação dinâmica de múltiplas chaves de API (Failover), retry inteligente para Rate Limit (429) e múltiplos modelos em cascata.
 """
 
 import json
+import time
 import itertools
 from groq import Groq
 from groq import RateLimitError as GroqRateLimitError
@@ -11,10 +12,14 @@ from pydantic import ValidationError
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
-# Importando as listas de chaves que você vai configurar no seu config.py
-from .config import GEMINI_API_KEYS, GEMINI_MODEL, GROQ_API_KEYS, GROQ_MODEL
+# Importando a lista de modelos (GEMINI_MODELS) e chaves
+from .config import (
+    GEMINI_API_KEYS, 
+    GEMINI_MODELS, 
+    GROQ_API_KEYS, 
+    GROQ_MODEL
+)
 from .models import JobPosting, MatchResult, ResumeData
 
 
@@ -22,7 +27,6 @@ from .models import JobPosting, MatchResult, ResumeData
 # GERENCIADORES DE CHAVES (ROUND-ROBIN)
 # ==========================================
 
-# Criamos iteradores infinitos que ficam rodando as chaves em ciclo: Chave1 -> Chave2 -> Chave1...
 if not GEMINI_API_KEYS or not isinstance(GEMINI_API_KEYS, list):
     raise ValueError("GEMINI_API_KEYS precisa ser uma lista de chaves no seu config.py/env")
 
@@ -53,16 +57,17 @@ def parse_job_posting(raw_text: str) -> JobPosting:
     """Usa a Groq para extrair dados estruturados. Faz failover de chave se bater no Rate Limit."""
     schema = JobPosting.model_json_schema()
     
+    clean_raw_text = raw_text[:4000] if len(raw_text) > 4000 else raw_text
+
     prompt = f"""Você é um especialista em recrutamento e seleção (R&S). Extraia as informações estruturadas da vaga abaixo.
 Retorne APENAS o JSON que obedeça estritamente a este esquema JSON: {json.dumps(schema)}.
 
 Texto da vaga:
 ---
-{raw_text}
+{clean_raw_text}
 ---"""
 
-    # Tentamos executar a chamada com até N tentativas baseadas no número de chaves que você tem
-    max_key_attempts = len(GROQ_API_KEYS) * 2
+    max_key_attempts = len(GROQ_API_KEYS) * 3
     
     for tentativa in range(max_key_attempts):
         try:
@@ -80,14 +85,13 @@ Texto da vaga:
             
             dados_json = json.loads(response_text)
             job = JobPosting(**dados_json)
-            job.raw_text = raw_text
+            job.raw_text = clean_raw_text
             return job
 
         except GroqRateLimitError as e:
-            print(f"[Groq Warning] Rate Limit atingido ou chave esgotada. Rotacionando para a próxima chave... Erro: {e}")
-            if tentativa == max_key_attempts - 1:
-                raise RuntimeError("Todas as chaves da Groq atingiram o limite de requisições.")
-            continue  # Pula para a próxima iteração pegando uma nova chave no pool
+            print(f"[Groq Warning] Rate Limit atingido (tentativa {tentativa+1}). Aguardando 3s... Erro: {e}")
+            time.sleep(3)
+            continue
             
         except ValidationError as ve:
             print(f"\nERRO DE VALIDAÇÃO DO PYDANTIC (JobPosting):\n{ve.json(indent=2)}")
@@ -101,10 +105,13 @@ Texto da vaga:
 # ==========================================
 
 def analyze_match(resume_text: str, job: JobPosting, resume_data: ResumeData | None = None) -> MatchResult:
-    """Analisa a compatibilidade com failover dinâmico de chaves do Gemini."""
-    resume_section = resume_text
+    """Analisa a compatibilidade utilizando os modelos configurados com retry inteligente para cota."""
+    resume_section = resume_text[:3500] if resume_text else ""
     if resume_data:
-        resume_section = resume_data.model_dump_json()
+        resume_section = resume_data.model_dump_json()[:3500]
+
+    reqs_filtrados = ', '.join([r for r in job.requirements if r][:15])
+    resps_filtradas = ', '.join([r for r in job.responsibilities if r][:10])
 
     prompt = f"""Você é um sistema ATS corporativo de última geração focado em extração exaustiva e mapeamento de fit técnico.
 Sua missão é ler o currículo fornecido e compará-lo minuciosamente com os requisitos da vaga, extraindo TODAS as correspondências e lacunas sem ignorar os detalhes dos projetos ou do resumo profissional.
@@ -124,8 +131,8 @@ VAGA ALVO:
 ---
 Título: {job.title}
 Empresa: {job.company}
-Requisitos Mandatórios: {', '.join(job.requirements[:20])}
-Responsabilidades: {', '.join(job.responsibilities[:12])}
+Requisitos Mandatórios: {reqs_filtrados}
+Responsabilidades: {resps_filtradas}
 ---"""
 
     gemini_schema = types.Schema(
@@ -143,30 +150,47 @@ Responsabilidades: {', '.join(job.responsibilities[:12])}
         required=["score", "verdict", "matching_skills", "missing_skills", "transferable_skills", "strengths", "weaknesses", "suggestions"]
     )
 
-    max_key_attempts = len(GEMINI_API_KEYS) * 2
-    
-    for tentativa in range(max_key_attempts):
-        try:
-            client = _get_next_gemini_client()
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type='application/json',
-                    response_schema=gemini_schema,
-                    temperature=0.2,
+    response = None
+    ultimo_erro = None
+
+    for model_name in GEMINI_MODELS:
+        # Tenta até 3 vezes por modelo aplicando espera progressiva (Backoff)
+        max_retries = 3
+        for tentativa in range(max_retries):
+            try:
+                client = _get_next_gemini_client()
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type='application/json',
+                        response_schema=gemini_schema,
+                        temperature=0.2,
+                    )
                 )
-            )
-            break # Sucesso! Sai do laço de tentativas de chaves
-            
-        except APIError as e:
-            # Captura erros comuns de limite de cota do Gemini (geralmente HTTP 429 ou ResourceExhausted)
-            if "429" in str(e) or "ResourceExhausted" in str(e) or "quota" in str(e).lower():
-                print(f"[Gemini Warning] Cota estourada nesta chave. Mudando de API Key... Código: {e}")
-                if tentativa == max_key_attempts - 1:
-                    raise RuntimeError("Todas as chaves do Gemini falharam por exaustão de cota.")
-                continue
-            raise e
+                if response and response.text:
+                    break
+            except APIError as e:
+                ultimo_erro = e
+                err_msg = str(e).lower()
+                print(f"[Aviso Gemini Match] Modelo '{model_name}' (Tentativa {tentativa+1}/{max_retries}) falhou: {e}")
+                
+                if "429" in str(e) or "resourceexhausted" in err_msg or "quota" in err_msg:
+                    tempo_espera = (tentativa + 1) * 5  # Espera 5s na 1ª, 10s na 2ª, 15s na 3ª
+                    print(f"⏳ Cota atingida no Gemini. Aguardando {tempo_espera}s para tentar novamente...")
+                    time.sleep(tempo_espera)
+                    continue
+                break  # Erro 404/Invalido -> Passa direto pro próximo modelo
+            except Exception as e:
+                ultimo_erro = e
+                print(f"[Aviso Gemini Match] Erro inesperado: {e}")
+                break
+        
+        if response is not None and response.text:
+            break
+
+    if response is None or not response.text:
+        raise RuntimeError(f"Todos os modelos do Gemini ({', '.join(GEMINI_MODELS)}) e chaves falharam. Último erro: {ultimo_erro}")
 
     try:
         dados_json = json.loads(response.text)
@@ -203,10 +227,14 @@ Responsabilidades: {', '.join(job.responsibilities[:12])}
 def generate_tailored_resume(
     resume_text: str, job: JobPosting, match: MatchResult, resume_data: ResumeData | None = None
 ) -> ResumeData:
-    """Reescreve o currículo aplicando injeção de keywords com failover automático de chaves."""
-    resume_section = resume_text
+    """Reescreve o currículo usando os modelos em cascata (Fallback)."""
+    resume_section = resume_text[:3500] if resume_text else ""
     if resume_data:
-        resume_section = resume_data.model_dump_json()
+        resume_section = resume_data.model_dump_json()[:3500]
+
+    reqs_filtrados = ', '.join([r for r in job.requirements if r][:15])
+    keywords_filtradas = ', '.join([k for k in (job.keywords if hasattr(job, 'keywords') and job.keywords else job.requirements) if k][:10])
+    resps_filtradas = ', '.join([r for r in job.responsibilities if r][:10])
 
     prompt = f"""Você é um engenheiro de recrutamento técnico especialista em engenharia de currículos otimizados para algoritmos de ATS (Applicant Tracking Systems).
 Sua missão é reconstruir o currículo do candidato garantindo que os robôs de triagem encontrem as palavras-chave exatas exigidas pela vaga-alvo.
@@ -226,36 +254,54 @@ VAGA DE ALVO:
 ---
 Título: {job.title}
 Empresa: {job.company}
-Requisitos Críticos: {', '.join(job.requirements[:20])}
-Keywords do ATS: {', '.join(job.keywords if hasattr(job, 'keywords') and job.keywords else job.requirements[:10])}
-Responsabilidades Principais: {', '.join(job.responsibilities[:10])}
+Requisitos Críticos: {reqs_filtrados}
+Keywords do ATS: {keywords_filtradas}
+Responsabilidades Principais: {resps_filtradas}
 ---
 
 Gere o novo currículo otimizado seguindo estritamente a estrutura ResumeData."""
 
     resume_data_schema = ResumeData.model_json_schema()
-    max_key_attempts = len(GEMINI_API_KEYS) * 2
+    response = None
+    ultimo_erro = None
 
-    for tentativa in range(max_key_attempts):
-        try:
-            client = _get_next_gemini_client()
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type='application/json',
-                    response_schema=resume_data_schema,
-                    temperature=0.3,
+    for model_name in GEMINI_MODELS:
+        max_retries = 3
+        for tentativa in range(max_retries):
+            try:
+                client = _get_next_gemini_client()
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type='application/json',
+                        response_schema=resume_data_schema,
+                        temperature=0.3,
+                    )
                 )
-            )
+                if response and response.text:
+                    break
+            except APIError as e:
+                ultimo_erro = e
+                err_msg = str(e).lower()
+                print(f"[Aviso Gemini Reescrita] Modelo '{model_name}' (Tentativa {tentativa+1}/{max_retries}) falhou: {e}")
+                
+                if "429" in str(e) or "resourceexhausted" in err_msg or "quota" in err_msg:
+                    tempo_espera = (tentativa + 1) * 5
+                    print(f"⏳ Cota atingida na Reescrita. Aguardando {tempo_espera}s...")
+                    time.sleep(tempo_espera)
+                    continue
+                break
+            except Exception as e:
+                ultimo_erro = e
+                print(f"[Aviso Gemini Reescrita] Erro inesperado: {e}")
+                break
+        
+        if response is not None and response.text:
             break
-        except APIError as e:
-            if "429" in str(e) or "ResourceExhausted" in str(e) or "quota" in str(e).lower():
-                print(f"[Gemini Warning] Cota estourada na reescrita. Mudando de API Key... Código: {e}")
-                if tentativa == max_key_attempts - 1:
-                    raise RuntimeError("Todas as chaves do Gemini falharam na etapa de reescrita.")
-                continue
-            raise e
+
+    if response is None or not response.text:
+        raise RuntimeError(f"Todas as chaves e modelos ({', '.join(GEMINI_MODELS)}) falharam na reescrita. Último erro: {ultimo_erro}")
 
     try:
         dados_json = json.loads(response.text)
@@ -272,36 +318,50 @@ Gere o novo currículo otimizado seguindo estritamente a estrutura ResumeData.""
 # ==========================================
 
 def generate_cover_letter(resume_text: str, job: JobPosting, match: MatchResult) -> str:
-    """Gera a carta de apresentação tratando possíveis quedas de cota por limite de requisições."""
+    """Gera a carta de apresentação usando os modelos do Gemini em cascata (Fallback)."""
+    reqs_filtrados = ', '.join([r for r in job.requirements if r][:5])
+    skills_filtradas = ', '.join([s for s in match.matching_skills if s][:5])
+
     prompt = f"""Escreva uma Carta de Apresentação concisa (máximo 3 parágrafos) focando estritamente na sinergia técnica para esta vaga.
 
 VAGA:
 ---
 Título: {job.title}
 Empresa: {job.company}
-Requisitos principais: {', '.join(job.requirements[:5])}
+Requisitos principais: {reqs_filtrados}
 ---
 
 COMPETÊNCIAS FILTRADAS DO CANDIDATO:
-{', '.join(match.matching_skills[:5])}
+{skills_filtradas}
 
 Gere o texto direto, sem cabeçalhos antiquados, pronto para envio profissional."""
 
-    max_key_attempts = len(GEMINI_API_KEYS) * 2
+    ultimo_erro = None
 
-    for tentativa in range(max_key_attempts):
-        try:
-            client = _get_next_gemini_client()
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.5)
-            )
-            return response.text
-        except APIError as e:
-            if "429" in str(e) or "ResourceExhausted" in str(e) or "quota" in str(e).lower():
-                print(f"[Gemini Warning] Cota escorrendo na Carta de Apresentação. Mudando de chave...")
-                if tentativa == max_key_attempts - 1:
-                    raise RuntimeError("Todas as chaves esgotadas na geração da carta.")
-                continue
-            raise e
+    for model_name in GEMINI_MODELS:
+        max_retries = 3
+        for tentativa in range(max_retries):
+            try:
+                client = _get_next_gemini_client()
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(temperature=0.5)
+                )
+                if response and response.text:
+                    return response.text
+            except APIError as e:
+                ultimo_erro = e
+                err_msg = str(e).lower()
+                print(f"[Aviso Gemini Carta] Modelo '{model_name}' (Tentativa {tentativa+1}/{max_retries}) falhou: {e}")
+                if "429" in str(e) or "resourceexhausted" in err_msg or "quota" in err_msg:
+                    tempo_espera = (tentativa + 1) * 5
+                    time.sleep(tempo_espera)
+                    continue
+                break
+            except Exception as e:
+                ultimo_erro = e
+                print(f"[Aviso Gemini Carta] Erro inesperado: {e}")
+                break
+
+    raise RuntimeError(f"Todas as chaves e modelos ({', '.join(GEMINI_MODELS)}) esgotados na geração da carta. Último erro: {ultimo_erro}")
