@@ -35,7 +35,7 @@ _gemini_keys_raw = os.getenv("GEMINI_API_KEYS", os.getenv("GEMINI_API_KEY", ""))
 GEMINI_API_KEYS: list[str] = [k.strip() for k in _gemini_keys_raw.split(",") if k.strip()]
 
 # 2. GEMINI - Lista de Modelos com Fallback (Lê GEMINI_MODEL do .env ex: gemini-2.5-flash,gemini-2.0-flash)
-_gemini_models_raw = os.getenv("GEMINI_MODEL", "gemini-2.5-flash,gemini-2.0-flash")
+_gemini_models_raw = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_MODELS: list[str] = [
     m.replace("models/", "").strip() 
     for m in _gemini_models_raw.split(",") 

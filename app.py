@@ -54,27 +54,27 @@ def api_scrape():
     data = request.json or {}
     url = data.get('url')
     if not url:
-        return jsonify({'error': 'URL não informada'}), 400
+        return jsonify({'error': 'URL da vaga não informada.'}), 400
     try:
         extracted_text = scrape_job(url)
         return jsonify({'text': extracted_text})
     except Exception as e:
         print(f"\n[Erro Scrape]: {e}")
-        return jsonify({'error': f'Não foi possível extrair o texto da vaga: {str(e)}'}), 500
+        return jsonify({'error': 'Não foi possível extrair automaticamente o texto desta página. Por favor, cole a descrição da vaga manualmente.'}), 500
 
 
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
     if 'resume' not in request.files:
-        return jsonify({'error': 'Nenhum currículo enviado.'}), 400
+        return jsonify({'error': 'Nenhum arquivo de currículo foi enviado.'}), 400
         
     file = request.files['resume']
     job_text = request.form.get('job_text', '')
     
     if file.filename == '':
-        return jsonify({'error': 'Arquivo vazio.'}), 400
+        return jsonify({'error': 'O arquivo do currículo enviado está vazio.'}), 400
     if not job_text:
-        return jsonify({'error': 'Texto da vaga não informado.'}), 400
+        return jsonify({'error': 'O texto da vaga não foi informado.'}), 400
         
     try:
         UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -90,32 +90,30 @@ def api_analyze():
             raw_resume, resume_data = parse_resume(resume_path)
         except Exception as e:
             print(f"[Erro Parse Resume]: {e}")
-            return jsonify({'error': f'Falha ao processar o arquivo de currículo: {str(e)}'}), 422
+            return jsonify({'error': 'Não foi possível ler o arquivo do currículo. Certifique-se de enviar um PDF ou DOCX válido.'}), 422
         
         # 2. Parse Job
         try:
             job = parse_job_posting(job_text)
         except ValidationError as ve:
             print(f"[Erro Validação Job]: {ve}")
-            return jsonify({'error': 'Não foi possível estruturar os dados da vaga de emprego fornecida.'}), 422
+            return jsonify({'error': 'Não foi possível identificar os requisitos da vaga. Tente colar um texto mais completo.'}), 422
         except Exception as e:
             print(f"[Erro Parse Job]: {e}")
-            return jsonify({'error': f'Falha ao analisar o texto da vaga: {str(e)}'}), 500
+            return jsonify({'error': 'Ocorreu um erro ao processar a descrição da vaga.'}), 500
         
         # 3. Match via Gemini
         try:
             match = analyze_match(raw_resume, job, resume_data)
         except APIError as e:
             print(f"[Erro API Gemini no Match]: {e}")
-            if "503" in str(e) or "429" in str(e) or "resourceexhausted" in str(e).lower():
-                return jsonify({'error': 'Serviço da IA ocupado ou cota temporariamente excedida. Aguarde 20 segundos e tente novamente.'}), 503
-            return jsonify({'error': f'Erro na comunicação com a IA do Gemini: {str(e)}'}), 502
+            return jsonify({'error': 'O serviço de Inteligência Artificial está temporariamente indisponível ou com alta demanda. Por favor, aguarde cerca de 30 segundos e tente novamente.'}), 503
         except ValidationError as ve:
             print(f"[Erro Validação Match]: {ve}")
-            return jsonify({'error': 'Erro de validação nos dados de compatibilidade gerados pela IA.'}), 502
+            return jsonify({'error': 'Houve uma inconsistência no processamento dos dados. Por favor, tente novamente.'}), 502
         except Exception as e:
             print(f"[Erro Analyze Match]: {e}")
-            return jsonify({'error': f'Falha na análise de compatibilidade: {str(e)}'}), 502
+            return jsonify({'error': 'Ocorreu uma falha durante a análise de compatibilidade. Por favor, tente novamente em instantes.'}), 503
         
         return jsonify({
             'success': True,
@@ -134,7 +132,7 @@ def api_analyze():
         print("\n" + "="*50)
         print(f"ERRO CRÍTICO INESPERADO NA ROTA /api/analyze: {e}")
         print("="*50 + "\n")
-        return jsonify({'error': f'Erro interno no servidor: {str(e)}'}), 500
+        return jsonify({'error': 'Desculpe, ocorreu um erro interno em nossos servidores. Por favor, tente novamente.'}), 500
 
 
 @app.route('/api/generate', methods=['POST'])
@@ -145,7 +143,7 @@ def api_generate():
     
     if not resume_path.exists() or not job_text:
         return jsonify({
-            'error': 'Sessão expirada ou arquivo temporário removido. Por favor, faça o upload do currículo novamente.'
+            'error': 'Sessão expirada ou arquivo temporário removido. Por favor, envie o currículo novamente.'
         }), 400
         
     try:
@@ -184,10 +182,10 @@ def api_generate():
         
     except APIError as e:
         print(f"\n[Erro API Gemini na Geração]: {e}")
-        return jsonify({'error': 'A IA demorou a responder ou a cota esgotou. Tente clicar em gerar novamente em instantes.'}), 503
+        return jsonify({'error': 'A IA demorou a responder ou o limite de requisições foi atingido. Aguarde alguns segundos e clique em gerar novamente.'}), 503
     except Exception as e:
         print(f"\n[Erro Geração de Documentos]: {e}")
-        return jsonify({'error': f'Falha ao gerar os documentos customizados: {str(e)}'}), 500
+        return jsonify({'error': 'Não foi possível gerar os documentos personalizados no momento. Por favor, tente novamente.'}), 500
 
 
 @app.route('/download/<filename>')

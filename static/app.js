@@ -41,10 +41,10 @@ function appData() {
                     this.jobText = data.text;
                     this.inputMode = 'text'; // Alterna automaticamente para a aba de texto
                 } else {
-                    alert('Erro ao extrair vaga: ' + (data.error || 'Erro desconhecido.'));
+                    alert(data.error || 'Não foi possível extrair o conteúdo da página informada.');
                 }
             } catch (error) {
-                alert('Erro de rede ao raspar a vaga: ' + error.message);
+                alert('Falha na conexão com o servidor. Verifique sua internet e tente novamente.');
             } finally {
                 this.isScraping = false;
             }
@@ -75,10 +75,10 @@ function appData() {
                     // Garante que a div #radarChart já foi renderizada antes de desenhar
                     setTimeout(() => this.drawRadarChart(), 100);
                 } else {
-                    alert('Erro na análise ATS: ' + (data.error || 'Falha no processamento.'));
+                    alert(data.error || 'Ocorreu um erro ao processar a análise do currículo.');
                 }
             } catch (error) {
-                alert('Erro de conexão com o servidor: ' + error.message);
+                alert('Não foi possível se conectar ao servidor. Por favor, tente novamente em instantes.');
             } finally {
                 this.isAnalyzing = false;
             }
@@ -152,7 +152,7 @@ function appData() {
                 const response = await fetch('/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.sessionData) // Envia o payload completo (path + text)
+                    body: JSON.stringify(this.sessionData)
                 });
                 
                 const data = await response.json();
@@ -160,11 +160,10 @@ function appData() {
                 if (response.ok) {
                     this.generatedFiles = data;
                 } else {
-                    // Trata especificamente o aviso de sessão/arquivo temporário expirado que adicionamos no Python
-                    alert('Erro ao forjar ativos: ' + (data.error || 'Erro desconhecido.'));
+                    alert(data.error || 'Ocorreu uma falha ao gerar os documentos personalizados.');
                 }
             } catch (error) {
-                alert('Erro na comunicação com o servidor de documentos: ' + error.message);
+                alert('Erro de conexão ao solicitar a geração dos arquivos. Tente novamente.');
             } finally {
                 this.isGenerating = false;
             }
