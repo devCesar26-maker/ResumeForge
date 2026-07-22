@@ -196,9 +196,13 @@ def api_generate():
             
         first_name = "cv"
         if tailored_data.personal and tailored_data.personal.name:
-            first_name = "".join(c for c in tailored_data.personal.name.split()[0] if c.isalnum())
+            import unicodedata
+            # Remove acentos
+            nfkd = unicodedata.normalize('NFKD', tailored_data.personal.name.split()[0])
+            first_name = "".join([c for c in nfkd if not unicodedata.combining(c)])
+            first_name = "".join(c for c in first_name if c.isalnum())
             
-        output_name = f"{first_name}_{company_slug}_{int(time.time())}"
+        output_name = secure_filename(f"{first_name}_{company_slug}_{int(time.time())}")
         
         # 4. Geração dos arquivos físicos (.docx, .tex, .pdf)
         word_path = generate_word(tailored_data, output_name)
