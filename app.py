@@ -1,8 +1,9 @@
-"""Backend da Aplicação Web ResumeForge (Flask)."""
+"""Backend da Aplicação Web ResumeForge (Flask). Otimizado para baixa latência e execução paralela."""
 
 import os
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from pydantic import ValidationError
@@ -39,7 +40,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def check_api_key():
-    """Verifica se existe pelo menos uma chave válida na lista de rotação do Gemini."""
+    """Verifica se existe pelo menos uma chave válida na lista do Gemini."""
     return bool(GEMINI_API_KEYS)
 
 
@@ -107,13 +108,13 @@ def api_analyze():
             match = analyze_match(raw_resume, job, resume_data)
         except APIError as e:
             print(f"[Erro API Gemini no Match]: {e}")
-            return jsonify({'error': 'O serviço de Inteligência Artificial está temporariamente indisponível ou com alta demanda. Por favor, aguarde cerca de 30 segundos e tente novamente.'}), 503
+            return jsonify({'error': 'O serviço de IA está com alta demanda. Por favor, aguarde alguns segundos e tente novamente.'}), 503
         except ValidationError as ve:
             print(f"[Erro Validação Match]: {ve}")
             return jsonify({'error': 'Houve uma inconsistência no processamento dos dados. Por favor, tente novamente.'}), 502
         except Exception as e:
             print(f"[Erro Analyze Match]: {e}")
-            return jsonify({'error': 'Ocorreu uma falha durante a análise de compatibilidade. Por favor, tente novamente em instantes.'}), 503
+            return jsonify({'error': 'Ocorreu uma falha durante a análise de compatibilidade. Por favor, tente novamente.'}), 503
         
         return jsonify({
             'success': True,
@@ -149,43 +150,53 @@ def api_generate():
     try:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Recupera o parse básico do currículo e da vaga
+        # 1. Recupera o parse básico em memória de forma rápida
         raw_resume, resume_data = parse_resume(resume_path)
         job = parse_job_posting(job_text)
-        
-        # Recria o objeto de match sem reprocessar se necessário
         match = analyze_match(raw_resume, job, resume_data)
         
-        # Gera carta de apresentação e currículo adaptado
-        cover_letter = generate_cover_letter(raw_resume, job, match)
-        tailored_data = generate_tailored_resume(raw_resume, job, match, resume_data)
+        # 2. EXECUÇÃO PARALELA (Threading) para economizar tempo e evitar o Timeout (30s do Render)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_tailored = executor.submit(generate_tailored_resume, raw_resume, job, match, resume_data)
+            future_cover = executor.submit(generate_cover_letter, raw_resume, job, match)
+            
+            # Aguarda o resultado das duas tarefas simultâneas
+            tailored_data = future_tailored.result()
+            cover_letter = future_cover.result()
         
-        # Nome do arquivo de saída
+        # 3. Nome dos arquivos de saída
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
         if not company_slug:
             company_slug = "vaga"
         output_name = f"cv_{company_slug}_{int(time.time())}"
         
+        # 4. Geração dos arquivos físicos (.docx, .tex, .pdf)
         word_path = generate_word(tailored_data, output_name)
-        tex_path = generate_latex(tailored_data, output_name)
-        pdf_path = compile_pdf(tex_path)
         
+        pdf_path = None
+        tex_path = None
+        try:
+            tex_path = generate_latex(tailored_data, output_name)
+            pdf_path = compile_pdf(tex_path)
+        except Exception as e_pdf:
+            print(f"[Aviso Compilação PDF]: Falha ao compilar LaTeX/PDF, mantendo Word. Erro: {e_pdf}")
+
         return jsonify({
             'success': True,
             'cover_letter': cover_letter,
             'files': {
-                'word': f'/download/{word_path.name}',
-                'tex': f'/download/{tex_path.name}',
+                'word': f'/download/{word_path.name}' if word_path else None,
+                'tex': f'/download/{tex_path.name}' if tex_path else None,
                 'pdf': f'/download/{pdf_path.name}' if pdf_path else None
             }
         })
         
     except APIError as e:
         print(f"\n[Erro API Gemini na Geração]: {e}")
-        return jsonify({'error': 'A IA demorou a responder ou o limite de requisições foi atingido. Aguarde alguns segundos e clique em gerar novamente.'}), 503
+        return jsonify({'error': 'O limite da API do Gemini foi atingido temporariamente. Aguarde 30 segundos e tente novamente.'}), 503
     except Exception as e:
         print(f"\n[Erro Geração de Documentos]: {e}")
-        return jsonify({'error': 'Não foi possível gerar os documentos personalizados no momento. Por favor, tente novamente.'}), 500
+        return jsonify({'error': 'Não foi possível gerar os documentos no momento. Por favor, tente novamente.'}), 500
 
 
 @app.route('/download/<filename>')
