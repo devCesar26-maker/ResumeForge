@@ -198,64 +198,65 @@ Responsabilidades:
     )
 
     client = _get_gemini_client()
-    model_name = _get_gemini_model()
 
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type='application/json',
-                response_schema=gemini_schema,
-                temperature=0.3,
-            ),
-        )
+    for model_name in GEMINI_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type='application/json',
+                    response_schema=gemini_schema,
+                    temperature=0.3,
+                ),
+            )
 
-        if response and response.text:
-            dados_json = json.loads(response.text)
-            score_bruto = dados_json.get('score', '0')
-            try:
-                score = int(
-                    float(
-                        str(score_bruto)
-                        .replace('%', '')
-                        .replace('pt', '')
-                        .strip()
+            if response and response.text:
+                dados_json = json.loads(response.text)
+                score_bruto = dados_json.get('score', '0')
+                try:
+                    score = int(
+                        float(
+                            str(score_bruto)
+                            .replace('%', '')
+                            .replace('pt', '')
+                            .strip()
+                        )
                     )
-                )
-            except (ValueError, TypeError):
-                score = 0
+                except (ValueError, TypeError):
+                    score = 0
 
-            score = max(0, min(100, score))
-            verdict = (
-                'ALTA' if score >= 75 else 'MEDIA' if score >= 50 else 'BAIXA'
-            )
-
-            def extrair_lista(chave: str) -> list[str]:
-                valores = dados_json.get(chave, [])
-                return (
-                    [str(v) for v in valores if v is not None]
-                    if isinstance(valores, list)
-                    else []
+                score = max(0, min(100, score))
+                verdict = (
+                    'ALTA' if score >= 75 else 'MEDIA' if score >= 50 else 'BAIXA'
                 )
 
-            return MatchResult(
-                score=score,
-                verdict=verdict,
-                matching_skills=extrair_lista('matching_skills'),
-                missing_skills=extrair_lista('missing_skills'),
-                transferable_skills=extrair_lista('transferable_skills'),
-                strengths=extrair_lista('strengths'),
-                weaknesses=extrair_lista('weaknesses'),
-                suggestions=extrair_lista('suggestions'),
-                tailored_resume=None,
+                def extrair_lista(chave: str) -> list[str]:
+                    valores = dados_json.get(chave, [])
+                    return (
+                        [str(v) for v in valores if v is not None]
+                        if isinstance(valores, list)
+                        else []
+                    )
+
+                return MatchResult(
+                    score=score,
+                    verdict=verdict,
+                    matching_skills=extrair_lista('matching_skills'),
+                    missing_skills=extrair_lista('missing_skills'),
+                    transferable_skills=extrair_lista('transferable_skills'),
+                    strengths=extrair_lista('strengths'),
+                    weaknesses=extrair_lista('weaknesses'),
+                    suggestions=extrair_lista('suggestions'),
+                    tailored_resume=None,
+                )
+        except Exception as e:
+            print(
+                f'[Gemini Match Error] Falha na chamada da API ({model_name}): {e}',
+                file=sys.stdout,
+                flush=True,
             )
-    except Exception as e:
-        print(
-            f'[Gemini Match Error] Falha na chamada da API ({model_name}): {e}',
-            file=sys.stdout,
-            flush=True,
-        )
+            continue
 
     # Fallback de segurança apenas se houver falha de rede/API
     return MatchResult(
@@ -324,35 +325,36 @@ Keywords ATS: {keywords_filtradas}
 ---"""
 
     client = _get_gemini_client()
-    model_name = _get_gemini_model()
 
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type='application/json',
-                response_schema=ResumeData.model_json_schema(),
-                temperature=0.3,
-            ),
-        )
-        if response and response.text:
-            dados_json = json.loads(response.text)
+    for model_name in GEMINI_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type='application/json',
+                    response_schema=ResumeData.model_json_schema(),
+                    temperature=0.3,
+                ),
+            )
+            if response and response.text:
+                dados_json = json.loads(response.text)
 
-            # Preservação de dados pessoais
-            if resume_data and resume_data.personal:
-                if not dados_json.get('personal') or not dados_json[
-                    'personal'
-                ].get('name'):
-                    dados_json['personal'] = resume_data.personal.model_dump()
+                # Preservação de dados pessoais
+                if resume_data and resume_data.personal:
+                    if not dados_json.get('personal') or not dados_json[
+                        'personal'
+                    ].get('name'):
+                        dados_json['personal'] = resume_data.personal.model_dump()
 
-            return ResumeData(**dados_json)
-    except Exception as e:
-        print(
-            f'[Gemini Reescrita Error] Falha na API ({model_name}): {e}',
-            file=sys.stdout,
-            flush=True,
-        )
+                return ResumeData(**dados_json)
+        except Exception as e:
+            print(
+                f'[Gemini Reescrita Error] Falha na API ({model_name}): {e}',
+                file=sys.stdout,
+                flush=True,
+            )
+            continue
 
     if resume_data:
         return resume_data
@@ -377,22 +379,23 @@ def generate_cover_letter(
 Competências em destaque: {skills_filtradas}."""
 
     client = _get_gemini_client()
-    model_name = _get_gemini_model()
 
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.5),
-        )
-        if response and response.text:
-            return response.text
-    except Exception as e:
-        print(
-            f'[Gemini Carta Error] ({model_name}): {e}',
-            file=sys.stdout,
-            flush=True,
-        )
+    for model_name in GEMINI_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.5),
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            print(
+                f'[Gemini Carta Error] ({model_name}): {e}',
+                file=sys.stdout,
+                flush=True,
+            )
+            continue
 
     return (
         f'Prezada equipe de recrutamento da {job.company or "empresa"},\n\n'

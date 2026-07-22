@@ -64,22 +64,22 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
         section.right_margin = Inches(0.7)
 
     # ── 1. Cabeçalho (Contatos) ──────────────────────────────────────────
-    if hasattr(resume, 'contact') and resume.contact:
+    if hasattr(resume, 'personal') and resume.personal:
         name_para = doc.add_paragraph()
         name_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
         name_para.paragraph_format.space_after = Pt(2)
         
-        name_run = name_para.add_run(resume.contact.name)
+        name_run = name_para.add_run(resume.personal.name)
         name_run.bold = True
         name_run.font.size = Pt(18)
         name_run.font.color.rgb = RGBColor(0x11, 0x11, 0x11)
 
         contact_details = []
-        if resume.contact.email: contact_details.append(resume.contact.email)
-        if resume.contact.phone: contact_details.append(resume.contact.phone)
-        if resume.contact.location: contact_details.append(resume.contact.location)
-        if resume.contact.linkedin: contact_details.append(resume.contact.linkedin)
-        if resume.contact.github: contact_details.append(resume.contact.github)
+        if resume.personal.email: contact_details.append(resume.personal.email)
+        if resume.personal.phone: contact_details.append(resume.personal.phone)
+        if resume.personal.location: contact_details.append(resume.personal.location)
+        if resume.personal.linkedin: contact_details.append(resume.personal.linkedin)
+        if resume.personal.github: contact_details.append(resume.personal.github)
         
         if contact_details:
             contact_para = doc.add_paragraph("  |  ".join(contact_details))

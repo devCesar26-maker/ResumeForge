@@ -2,6 +2,7 @@
 
 import os
 import time
+import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template, request, jsonify, send_file
@@ -116,6 +117,18 @@ def api_analyze():
             print(f"[Erro Analyze Match]: {e}")
             return jsonify({'error': 'Ocorreu uma falha durante a análise de compatibilidade. Por favor, tente novamente.'}), 503
         
+        session_id = f"{timestamp}_{filename}"
+        session_file = UPLOAD_FOLDER / f"{session_id}_session.json"
+        
+        session_state = {
+            'job': job.model_dump(),
+            'match': match.model_dump(),
+            'resume_data': resume_data.model_dump() if resume_data else None,
+            'raw_resume': raw_resume
+        }
+        with open(session_file, 'w', encoding='utf-8') as f:
+            json.dump(session_state, f, ensure_ascii=False)
+            
         return jsonify({
             'success': True,
             'job': {
@@ -124,6 +137,7 @@ def api_analyze():
             },
             'match': match.model_dump(),
             'session_data': {
+                'session_id': session_id,
                 'resume_path': str(resume_path),
                 'job_text': job_text
             }
@@ -139,6 +153,7 @@ def api_analyze():
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
     data = request.json or {}
+    session_id = data.get('session_id', '')
     resume_path = Path(data.get('resume_path', ''))
     job_text = data.get('job_text', '')
     
@@ -150,10 +165,20 @@ def api_generate():
     try:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         
-        # 1. Recupera o parse básico em memória de forma rápida
-        raw_resume, resume_data = parse_resume(resume_path)
-        job = parse_job_posting(job_text)
-        match = analyze_match(raw_resume, job, resume_data)
+        # 1. Recupera o parse básico do cache (ou processa novamente caso o cache expire)
+        session_file = app.config['UPLOAD_FOLDER'] / f"{session_id}_session.json"
+        if session_file.exists():
+            with open(session_file, 'r', encoding='utf-8') as f:
+                session_state = json.load(f)
+            from resumeforge.models import JobPosting, MatchResult, ResumeData
+            job = JobPosting(**session_state['job'])
+            match = MatchResult(**session_state['match'])
+            resume_data = ResumeData(**session_state['resume_data']) if session_state['resume_data'] else None
+            raw_resume = session_state['raw_resume']
+        else:
+            raw_resume, resume_data = parse_resume(resume_path)
+            job = parse_job_posting(job_text)
+            match = analyze_match(raw_resume, job, resume_data)
         
         # 2. EXECUÇÃO PARALELA (Threading) para economizar tempo e evitar o Timeout (30s do Render)
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -168,7 +193,12 @@ def api_generate():
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
         if not company_slug:
             company_slug = "vaga"
-        output_name = f"cv_{company_slug}_{int(time.time())}"
+            
+        first_name = "cv"
+        if tailored_data.personal and tailored_data.personal.name:
+            first_name = "".join(c for c in tailored_data.personal.name.split()[0] if c.isalnum())
+            
+        output_name = f"{first_name}_{company_slug}_{int(time.time())}"
         
         # 4. Geração dos arquivos físicos (.docx, .tex, .pdf)
         word_path = generate_word(tailored_data, output_name)
