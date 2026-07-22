@@ -311,6 +311,8 @@ def generate_tailored_resume(
     prompt = f"""Você é um especialista em engenharia de currículos otimizados para sistemas ATS.
 Reconstrua o currículo abaixo incluindo as palavras-chave necessárias da vaga mantendo os detalhes técnicos.
 
+IMPORTANTE: O currículo final DEVE ser redigido e mantido estritamente em Português do Brasil (PT-BR), mesmo que a vaga esteja em inglês ou outro idioma. Traduza os jargões quando necessário ou mantenha-os em inglês se forem nomes de tecnologias, mas a estrutura e a escrita (como 'Objetivo', 'Experiência') devem ser em Português.
+
 CURRÍCULO ORIGINAL:
 ---
 {resume_section}
