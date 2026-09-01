@@ -1,0 +1,21 @@
+# Ambiente virtual
+venv/
+.venv/
+.env
+
+.aider*
+# Caches do Python
+__pycache__/
+*.pyc
+
+ia.py
+
+# Arquivos temporários/PDFs gerados
+*.pdf
+data/
+
+*.docx
+output/
+
+*.txt
+output/

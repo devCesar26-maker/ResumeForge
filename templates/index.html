@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ResumeForge - IA para Currículos</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Plotly -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#6366f1', // Indigo / Violeta Moderno
+                        secondary: '#4f46e5', // Deep Indigo
+                        accent: '#10b981', // Emerald para Sucesso/Score
+                        darkbg: '#090d16',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Estilização suave de fundo e efeitos premium */
+        .glass-card {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+        .drag-active {
+            border-color: #6366f1 !important;
+            background-color: #f5f3ff !important;
+            box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15);
+        }
+        .skeleton {
+            background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+        }
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans antialiased min-h-screen selection:bg-indigo-100 selection:text-indigo-900">
+    
+    {% if not has_key %}
+    <div class="bg-gradient-to-r from-red-500 to-rose-600 text-white p-3 text-center text-sm font-semibold tracking-wide shadow-md flex items-center justify-center gap-2">
+        <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
+        Atenção: A chave da API do Gemini (GEMINI_API_KEY) não foi configurada no arquivo .env!
+    </div>
+    {% endif %}
+
+    <div x-data="appData()" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        
+        <!-- Header Premium -->
+        <header class="text-center mb-16 relative">
+            <div class="absolute inset-0 -top-10 -z-10 flex justify-center">
+                <div class="h-44 w-80 bg-indigo-200 opacity-20 blur-[100px] rounded-full"></div>
+            </div>
+            <div class="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-100 text-indigo-700 px-4 py-1.5 rounded-full text-xs font-semibold tracking-wider uppercase mb-4 shadow-sm">
+                <i class="fa-solid fa-sparkles text-indigo-500"></i> Inteligência Artificial Otimizada
+            </div>
+            <h1 class="text-5xl md:text-6xl font-black text-slate-900 tracking-tight mb-4">
+                <span class="bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-violet-600">ResumeForge</span>
+            </h1>
+            <p class="text-base md:text-lg text-slate-500 max-w-xl mx-auto font-medium">
+                Molde e adapte o seu perfil profissional para passar pelas triagens automatizadas e conquistar recrutadores em segundos.
+            </p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+            
+            <!-- Coluna Esquerda: Inputs -->
+            <div class="lg:col-span-1 space-y-8">
+                
+                <!-- Card: Currículo -->
+                <div class="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.02)] border border-slate-100 p-6 transition-all duration-300 hover:shadow-[0_8px_30px_rgb(0,0,0,0.05)]">
+                    <h2 class="text-lg font-bold text-slate-900 mb-4 flex items-center">
+                        <span class="flex items-center justify-center h-8 w-8 rounded-lg bg-rose-50 text-rose-500 mr-3">
+                            <i class="fa-solid fa-file-pdf text-sm"></i>
+                        </span>
+                        1. Importar Currículo
+                    </h2>
+                    
+                    <div 
+                        class="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center transition-all duration-300 cursor-pointer hover:border-indigo-400 group relative"
+                        :class="{'drag-active': isDragging}"
+                        @dragover.prevent="isDragging = true"
+                        @dragleave.prevent="isDragging = false"
+                        @drop.prevent="handleDrop($event)"
+                        @click="$refs.fileInput.click()"
+                    >
+                        <input type="file" x-ref="fileInput" class="hidden" accept=".pdf,.docx,.yaml,.txt" @change="handleFileSelect($event)">
+                        
+                        <div x-show="!file" class="space-y-3">
+                            <div class="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-slate-50 text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-500 transition-colors">
+                                <i class="fa-solid fa-cloud-arrow-up text-xl"></i>
+                            </div>
+                            <p class="text-sm font-semibold text-slate-700">Solte seu currículo aqui</p>
+                            <p class="text-xs text-slate-400">PDF, DOCX, TXT ou YAML (Max. 5MB)</p>
+                        </div>
+                        
+                        <div x-show="file" class="space-y-3" style="display: none;">
+                            <div class="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-emerald-50 text-emerald-500">
+                                <i class="fa-solid fa-file-circle-check text-xl"></i>
+                            </div>
+                            <p class="text-sm font-semibold text-slate-900 truncate px-2" x-text="file?.name"></p>
+                            <button @click.stop="file = null" class="text-xs text-rose-500 hover:text-rose-600 font-semibold hover:underline flex items-center justify-center gap-1 mx-auto transition-all">
+                                <i class="fa-solid fa-trash-can text-[10px]"></i> Remover Arquivo
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card: Vaga -->
+                <div class="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.02)] border border-slate-100 p-6 transition-all duration-300 hover:shadow-[0_8px_30px_rgb(0,0,0,0.05)]">
+                    <h2 class="text-lg font-bold text-slate-900 mb-4 flex items-center">
+                        <span class="flex items-center justify-center h-8 w-8 rounded-lg bg-indigo-50 text-indigo-500 mr-3">
+                            <i class="fa-solid fa-briefcase text-sm"></i>
+                        </span>
+                        2. Detalhes da Vaga
+                    </h2>
+                    
+                    <!-- Tabs Minimalistas -->
+                    <div class="flex space-x-1 bg-slate-100/80 p-1 rounded-xl mb-4">
+                        <button @click="inputMode = 'url'" :class="{'bg-white shadow-sm font-semibold text-indigo-600': inputMode === 'url', 'text-slate-500 hover:text-slate-700': inputMode !== 'url'}" class="flex-1 py-1.5 px-3 text-xs rounded-lg transition-all tracking-wide">BUSCAR POR URL</button>
+                        <button @click="inputMode = 'text'" :class="{'bg-white shadow-sm font-semibold text-indigo-600': inputMode === 'text', 'text-slate-500 hover:text-slate-700': inputMode !== 'text'}" class="flex-1 py-1.5 px-3 text-xs rounded-lg transition-all tracking-wide">COLAR TEXTO</button>
+                    </div>
+
+                    <!-- URL Input -->
+                    <div x-show="inputMode === 'url'" class="space-y-3">
+                        <div class="flex gap-2">
+                            <input type="url" x-model="jobUrl" placeholder="Cole o link do LinkedIn, Gupy ou Catho..." class="w-full text-sm rounded-xl border-slate-200 border px-4 py-2.5 focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 focus:outline-none transition-all placeholder:text-slate-400">
+                            <button @click="scrapeJob" :disabled="isScraping || !jobUrl" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 rounded-xl transition-all disabled:opacity-50 flex items-center justify-center">
+                                <i class="fa-solid fa-magnifying-glass" :class="{'fa-spin': isScraping}"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Text Area -->
+                    <div class="mt-3">
+                        <textarea x-model="jobText" rows="6" class="w-full text-sm rounded-xl border-slate-200 border p-4 focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 focus:outline-none transition-all placeholder:text-slate-400 resize-none" placeholder="Requisitos, atribuições, diferenciais..."></textarea>
+                    </div>
+                </div>
+
+                <!-- Action Button -->
+                <button 
+                    @click="analyzeMatch" 
+                    :disabled="!file || !jobText || isAnalyzing"
+                    class="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-bold py-4 px-6 rounded-2xl shadow-[0_10px_25px_rgba(99,102,241,0.25)] hover:shadow-[0_12px_30px_rgba(99,102,241,0.35)] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none flex justify-center items-center gap-3 text-base"
+                >
+                    <i class="fa-solid" :class="isAnalyzing ? 'fa-circle-notch fa-spin' : 'fa-wand-magic-sparkles'"></i>
+                    <span x-text="isAnalyzing ? 'Processando dados...' : 'Analisar Compatibilidade'"></span>
+                </button>
+            </div>
+
+            <!-- Coluna Direita: Resultados -->
+            <div class="lg:col-span-2 space-y-8">
+                
+                <!-- Estado Inicial (Elegante) -->
+                <div x-show="!matchResult && !isAnalyzing" class="bg-white rounded-2xl border border-dashed border-slate-200 h-full min-h-[460px] flex flex-col items-center justify-center text-slate-400 p-8 text-center shadow-[0_8px_30px_rgb(0,0,0,0.01)]">
+                    <div class="h-20 w-20 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 border border-slate-100 mb-6">
+                        <i class="fa-solid fa-chart-line text-3xl"></i>
+                    </div>
+                    <p class="text-xl font-bold text-slate-800">Seu Dashboard de análise</p>
+                    <p class="text-sm text-slate-400 mt-2 max-w-sm">Insira suas informações à esquerda para receber uma análise completa e as correções sugeridas pela Inteligência Artificial.</p>
+                </div>
+
+                <!-- Skeletons (Carregando em Grids) -->
+                <div x-show="isAnalyzing" style="display: none;" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 space-y-8">
+                    <div class="h-8 skeleton rounded w-1/3"></div>
+                    <div class="flex flex-col md:flex-row gap-8 items-center">
+                        <div class="md:w-1/3 flex flex-col items-center justify-center space-y-4">
+                            <div class="h-32 w-32 skeleton rounded-full"></div>
+                        </div>
+                        <div class="md:w-2/3 w-full space-y-4">
+                            <div class="h-4 skeleton rounded w-full"></div>
+                            <div class="h-4 skeleton rounded w-5/6"></div>
+                            <div class="h-4 skeleton rounded w-4/6"></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-6">
+                        <div class="h-36 skeleton rounded-2xl"></div>
+                        <div class="h-36 skeleton rounded-2xl"></div>
+                    </div>
+                </div>
+
+                <!-- Resultados da Análise -->
+                <div x-show="matchResult && !isAnalyzing" style="display: none;" class="space-y-8">
+                    
+                    <!-- Top Dashboard com Score de Alta Fidelidade -->
+                    <div class="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.02)] border border-slate-100 p-6 transition-all">
+                        <div class="flex flex-col md:flex-row gap-8 items-center">
+                            <!-- Score Circular Moderno -->
+                            <div class="md:w-1/3 text-center flex flex-col items-center justify-center">
+                                <h3 class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Afinidade Geral</h3>
+                                <div class="relative w-36 h-36 flex items-center justify-center rounded-full bg-slate-50 border-8 transition-all" 
+                                    :class="matchResult?.score >= 70 ? 'border-emerald-500/20 text-emerald-600' : matchResult?.score >= 40 ? 'border-amber-500/20 text-amber-600' : 'border-rose-500/20 text-rose-600'">
+                                    
+                                    <!-- Círculo Colorido Dinâmico -->
+                                    <div class="absolute inset-0 rounded-full border-8 border-transparent"
+                                        :class="matchResult?.score >= 70 ? 'border-emerald-500' : matchResult?.score >= 40 ? 'border-amber-500' : 'border-rose-500'"
+                                        style="clip-path: inset(0 0 0 0);"></div>
+                                    
+                                    <span class="text-4xl font-black tracking-tight" x-text="matchResult?.score + '%'"></span>
+                                </div>
+                                <span class="mt-4 px-4 py-1.5 rounded-full text-xs font-bold tracking-wide shadow-sm"
+                                    :class="matchResult?.score >= 70 ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : matchResult?.score >= 40 ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-rose-50 text-rose-700 border border-rose-100'"
+                                    x-text="matchResult?.verdict">
+                                </span>
+                            </div>
+                            
+                            <!-- Gráfico Plotly com bordas polidas -->
+                            <div class="md:w-2/3 w-full h-[280px]" id="radarChart"></div>
+                        </div>
+                    </div>
+
+                    <!-- Detalhes em Cards de Cores Suaves -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- Matching Skills -->
+                        <div class="bg-emerald-50/50 border border-emerald-100 rounded-2xl p-6 shadow-sm">
+                            <h4 class="font-bold text-emerald-800 flex items-center mb-4 text-sm tracking-wide uppercase">
+                                <span class="flex items-center justify-center h-7 w-7 rounded-lg bg-emerald-100 text-emerald-600 mr-2.5">
+                                    <i class="fa-solid fa-check text-xs"></i>
+                                </span>
+                                Pontos Correspondentes
+                            </h4>
+                            <ul class="text-sm text-emerald-700 space-y-2 list-none">
+                                <template x-for="skill in matchResult?.matching_skills">
+                                    <li class="flex items-start gap-2">
+                                        <i class="fa-solid fa-circle-check text-emerald-400 mt-1 text-[10px]"></i>
+                                        <span x-text="skill"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                        </div>
+
+                        <!-- Missing Skills -->
+                        <div class="bg-rose-50/50 border border-rose-100 rounded-2xl p-6 shadow-sm">
+                            <h4 class="font-bold text-rose-800 flex items-center mb-4 text-sm tracking-wide uppercase">
+                                <span class="flex items-center justify-center h-7 w-7 rounded-lg bg-rose-100 text-rose-600 mr-2.5">
+                                    <i class="fa-solid fa-xmark text-xs"></i>
+                                </span>
+                                Requisitos Faltantes
+                            </h4>
+                            <ul class="text-sm text-rose-700 space-y-2 list-none">
+                                <template x-for="skill in matchResult?.missing_skills">
+                                    <li class="flex items-start gap-2">
+                                        <i class="fa-solid fa-circle-xmark text-rose-400 mt-1 text-[10px]"></i>
+                                        <span x-text="skill"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                        </div>
+
+                        <!-- Transferable Skills (Largura Completa) -->
+                        <div class="bg-indigo-50/40 border border-indigo-100 rounded-2xl p-6 shadow-sm md:col-span-2">
+                            <h4 class="font-bold text-indigo-800 flex items-center mb-2 text-sm tracking-wide uppercase">
+                                <span class="flex items-center justify-center h-7 w-7 rounded-lg bg-indigo-100 text-indigo-600 mr-2.5">
+                                    <i class="fa-solid fa-shuffle text-xs"></i>
+                                </span>
+                                Habilidades Alternativas / Transferíveis
+                            </h4>
+                            <p class="text-xs text-indigo-500 mb-4 ml-9">Argumentos estratégicos que você pode utilizar na entrevista de emprego:</p>
+                            <ul class="text-sm text-indigo-700 space-y-2.5 list-none ml-9">
+                                <template x-for="skill in matchResult?.transferable_skills">
+                                    <li class="flex items-start gap-2">
+                                        <i class="fa-solid fa-lightbulb text-indigo-400 mt-1 text-xs"></i>
+                                        <span x-text="skill"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- CTA Principal: Exportador e Gerador de Documentos -->
+                    <div class="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.02)] border border-slate-100 p-8 text-center relative overflow-hidden">
+                        <div class="absolute -right-10 -bottom-10 -z-10">
+                            <div class="h-44 w-44 bg-indigo-100 opacity-20 blur-3xl rounded-full"></div>
+                        </div>
+                        
+                        <h3 class="text-2xl font-black text-slate-900 mb-2">Deseja otimizar sua candidatura?</h3>
+                        <p class="text-slate-500 mb-6 text-sm max-w-lg mx-auto">Deixe que a Inteligência Artificial reescreva seus pontos fracos e crie uma carta de apresentação sob medida.</p>
+                        
+                        <button 
+                            @click="generateDocs" 
+                            :disabled="isGenerating"
+                            class="w-full md:w-auto bg-slate-900 hover:bg-black text-white font-bold py-3.5 px-10 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 flex items-center justify-center gap-2 mx-auto text-sm tracking-wide"
+                        >
+                            <i class="fa-solid" :class="isGenerating ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i>
+                            <span x-text="isGenerating ? 'Modelando documentos...' : 'Gerar Currículo & Cover Letter'"></span>
+                        </button>
+
+                        <!-- Área de Resultados do Gerador -->
+                        <div x-show="generatedFiles" style="display: none;" class="mt-8 pt-8 border-t border-slate-100">
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 text-left">
+                                
+                                <!-- Cover Letter Container -->
+                                <div class="bg-slate-50/80 p-5 rounded-2xl border border-slate-200 shadow-inner">
+                                    <h4 class="font-bold text-slate-800 text-sm tracking-wide uppercase mb-3 flex items-center">
+                                        <i class="fa-solid fa-envelope-open-text text-indigo-500 mr-2"></i> Carta de Apresentação
+                                    </h4>
+                                    <textarea readonly rows="9" class="w-full text-xs text-slate-600 bg-white border border-slate-200 rounded-xl p-4 resize-none focus:outline-none focus:ring-0 leading-relaxed shadow-sm font-mono" x-text="generatedFiles?.cover_letter"></textarea>
+                                </div>
+                                
+                                <!-- Links de Download Estilizados -->
+                                <div class="flex flex-col justify-center space-y-3.5">
+                                    <h4 class="font-bold text-slate-800 text-sm tracking-wide uppercase mb-1">Baixar Documentos Otimizados:</h4>
+                                    
+                                    <!-- Word -->
+                                    <a :href="generatedFiles?.files?.word" class="flex items-center justify-between p-4 bg-blue-50/60 hover:bg-blue-100/80 text-blue-800 rounded-xl border border-blue-200/50 transition-all group shadow-sm">
+                                        <div class="flex items-center font-bold text-sm"><i class="fa-solid fa-file-word text-xl mr-3 text-blue-500"></i> Formato Word (.docx)</div>
+                                        <i class="fa-solid fa-download opacity-60 group-hover:opacity-100 transition-all"></i>
+                                    </a>
+                                    
+                                    <!-- PDF -->
+                                    <a x-show="generatedFiles?.files?.pdf" :href="generatedFiles?.files?.pdf" class="flex items-center justify-between p-4 bg-rose-50/60 hover:bg-rose-100/80 text-rose-800 rounded-xl border border-rose-200/50 transition-all group shadow-sm">
+                                        <div class="flex items-center font-bold text-sm"><i class="fa-solid fa-file-pdf text-xl mr-3 text-rose-500"></i> Formato PDF pronto</div>
+                                        <i class="fa-solid fa-download opacity-60 group-hover:opacity-100 transition-all"></i>
+                                    </a>
+                                    
+                                    <!-- LaTeX -->
+                                    <a :href="generatedFiles?.files?.tex" class="flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-xl border border-slate-200 transition-all group shadow-sm">
+                                        <div class="flex items-center font-semibold text-xs"><i class="fa-solid fa-code mr-3 text-slate-500"></i> Código Fonte (LaTeX)</div>
+                                        <i class="fa-solid fa-download opacity-60 group-hover:opacity-100 transition-all"></i>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,195 @@
+%# ============================================================================
+%# ResumeForge — Template de currículo profissional (estilo Jake's Resume)
+%# Delimitadores Jinja2: \VAR{}, \BLOCK{}, \#{}, %%, %#
+%# ============================================================================
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{tabularx}
+
+% ---------------------------------------------------------------------------
+% Configuração de página
+% ---------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-0.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% ---------------------------------------------------------------------------
+% Formatação de seções
+% ---------------------------------------------------------------------------
+\titleformat{\section}{\vspace{-4pt}\scshape\raggedright\large}{}{0em}{}[\color{black}\titlerule\vspace{-5pt}]
+
+% ---------------------------------------------------------------------------
+% Comandos customizados
+% ---------------------------------------------------------------------------
+\newcommand{\resumeItem}[1]{%
+  \item\small{#1\vspace{-2pt}}%
+}
+
+\newcommand{\resumeSubheading}[4]{%
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}%
+}
+
+\newcommand{\resumeProjectHeading}[2]{%
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}%
+}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+% ===========================================================================
+\begin{document}
+
+% ---------------------------------------------------------------------------
+% Cabeçalho — Nome e informações de contato
+% ---------------------------------------------------------------------------
+\begin{center}
+    \textbf{\Huge \scshape \VAR{personal.name}} \\ \vspace{1pt}
+    \small
+    \BLOCK{if personal.phone}\VAR{personal.phone}\BLOCK{endif}%
+    \BLOCK{if personal.email} $|$ \href{mailto:\VAR{personal.email}}{\VAR{personal.email}}\BLOCK{endif}%
+    \BLOCK{if personal.linkedin} $|$ \href{https://\VAR{personal.linkedin}}{\VAR{personal.linkedin}}\BLOCK{endif}%
+    \BLOCK{if personal.github} $|$ \href{https://\VAR{personal.github}}{\VAR{personal.github}}\BLOCK{endif}%
+    \BLOCK{if personal.portfolio} $|$ \href{https://\VAR{personal.portfolio}}{\VAR{personal.portfolio}}\BLOCK{endif}%
+    \BLOCK{if personal.location}\\
+    \VAR{personal.location}\BLOCK{endif}
+\end{center}
+
+% ---------------------------------------------------------------------------
+% Resumo Profissional (opcional)
+% ---------------------------------------------------------------------------
+\BLOCK{if summary}
+\section{Resumo Profissional}
+\small{\VAR{summary}}
+\BLOCK{endif}
+
+% ---------------------------------------------------------------------------
+% Experiência Profissional
+% ---------------------------------------------------------------------------
+\BLOCK{if experience}
+\section{Experiência Profissional}
+\resumeSubHeadingListStart
+\BLOCK{for exp in experience}
+    \resumeSubheading
+      {\VAR{exp.role}}{\VAR{exp.period}}
+      {\VAR{exp.company}}{\VAR{exp.location}}
+    \BLOCK{if exp.highlights}
+    \resumeItemListStart
+    \BLOCK{for item in exp.highlights}
+        \resumeItem{\VAR{item}}
+    \BLOCK{endfor}
+    \resumeItemListEnd
+    \BLOCK{endif}
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+% ---------------------------------------------------------------------------
+% Educação
+% ---------------------------------------------------------------------------
+\BLOCK{if education}
+\section{Educação}
+\resumeSubHeadingListStart
+\BLOCK{for edu in education}
+    \resumeSubheading
+      {\VAR{edu.institution}}{\VAR{edu.period}}
+      {\VAR{edu.degree}}{}
+    \BLOCK{if edu.details}
+    \resumeItemListStart
+    \BLOCK{for detail in edu.details}
+        \resumeItem{\VAR{detail}}
+    \BLOCK{endfor}
+    \resumeItemListEnd
+    \BLOCK{endif}
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+% ---------------------------------------------------------------------------
+% Habilidades Técnicas
+% ---------------------------------------------------------------------------
+\BLOCK{if skills}
+\section{Habilidades Técnicas}
+\begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{%
+    \BLOCK{for category, skill_list in skills.items()}
+        \textbf{\VAR{category}}{: \VAR{skill_list | join(', ')}} \\
+    \BLOCK{endfor}
+    }}
+\end{itemize}
+\BLOCK{endif}
+
+% ---------------------------------------------------------------------------
+% Projetos (opcional)
+% ---------------------------------------------------------------------------
+\BLOCK{if projects}
+\section{Projetos}
+\resumeSubHeadingListStart
+\BLOCK{for proj in projects}
+    \resumeProjectHeading
+      {\textbf{\VAR{proj.name}} $|$ \emph{\small{\VAR{proj.technologies | join(', ')}}}}{\BLOCK{if proj.url}\href{\VAR{proj.url}}{Link}\BLOCK{endif}}
+    \resumeItemListStart
+        \resumeItem{\VAR{proj.description}}
+    \resumeItemListEnd
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+% ---------------------------------------------------------------------------
+% Idiomas (opcional)
+% ---------------------------------------------------------------------------
+\BLOCK{if languages}
+\section{Idiomas}
+\begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{%
+    \BLOCK{for lang in languages}
+        \textbf{\VAR{lang.name}}{: \VAR{lang.level}}\BLOCK{if not loop.last} $|$ \BLOCK{endif}
+    \BLOCK{endfor}
+    }}
+\end{itemize}
+\BLOCK{endif}
+
+% ---------------------------------------------------------------------------
+% Certificações (opcional)
+% ---------------------------------------------------------------------------
+\BLOCK{if certifications}
+\section{Certificações}
+\resumeSubHeadingListStart
+\BLOCK{for cert in certifications}
+    \resumeProjectHeading
+      {\textbf{\VAR{cert.name}}\BLOCK{if cert.issuer} -- \VAR{cert.issuer}\BLOCK{endif}}{\VAR{cert.date}}
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+\end{document}
