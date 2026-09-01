@@ -23,8 +23,5 @@ RUN playwright install-deps chromium
 # Copiar código-fonte
 COPY . .
 
-# Expor a porta do Flask
-EXPOSE 8501
-
-# Comando de execução com Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8501", "--timeout", "120", "app:app"]
+# O Render gerencia a porta dinamicamente via variável $PORT
+CMD gunicorn --bind 0.0.0.0:$PORT --timeout 120 app:app
