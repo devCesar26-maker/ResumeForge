@@ -17,5 +17,5 @@ data/
 *.docx
 output/
 
-*.txt
+*.text
 output/
