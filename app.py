@@ -1,6 +1,5 @@
 """Backend da Aplicação Web ResumeForge (Flask)."""
 
-import os
 import time
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
@@ -11,7 +10,6 @@ from resumeforge.config import DATA_DIR, OUTPUT_DIR
 from resumeforge.resume_parser import parse_resume
 from resumeforge.scraper import scrape_job
 from resumeforge.analyzer import parse_job_posting, analyze_match, generate_tailored_resume, generate_cover_letter
-from resumeforge.generator import generate_latex, compile_pdf
 from resumeforge.word_generator import generate_word
 
 app = Flask(__name__)
@@ -143,16 +141,12 @@ def api_generate():
         output_name = f"cv_{company_slug}"
         
         word_path = generate_word(tailored_data, output_name)
-        tex_path = generate_latex(tailored_data, output_name)
-        pdf_path = compile_pdf(tex_path)
         
         return jsonify({
             'success': True,
             'cover_letter': cover_letter,
             'files': {
                 'word': f'/download/{word_path.name}',
-                'tex': f'/download/{tex_path.name}',
-                'pdf': f'/download/{pdf_path.name}' if pdf_path else None
             }
         })
         

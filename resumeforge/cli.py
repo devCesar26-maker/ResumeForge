@@ -13,7 +13,7 @@ from .models import ResumeData, MatchResult, JobPosting
 from .resume_parser import parse_resume
 from .scraper import scrape_job, read_job_from_file
 from .analyzer import parse_job_posting, analyze_match, generate_tailored_resume
-from .generator import generate_latex, compile_pdf
+from .word_generator import generate_word
 
 console = Console()
 
@@ -101,7 +101,7 @@ def _display_match_result(match: MatchResult, job: JobPosting):
 @click.option('--paste', is_flag=True, help='Colar texto da vaga diretamente')
 @click.option('--resume', type=click.Path(path_type=Path), default=DEFAULT_RESUME_PATH, help='Caminho para o currículo base')
 def match(url: str, paste: bool, resume: Path):
-    """Analisa compatibilidade entre currículo e vaga (não gera PDF)."""
+    """Analisa compatibilidade entre currículo e vaga (sem gerar documento)."""
     raw_resume, resume_data = _load_resume(resume)
     raw_job = _get_job_text(url, paste)
     
@@ -140,39 +140,31 @@ def tailor(url: str, paste: bool, resume: Path, force: bool):
     with console.status("[bold green]Gerando currículo adaptado com IA..."):
         tailored_data = generate_tailored_resume(raw_resume, job, result, resume_data)
         
-    with console.status("[bold green]Compilando LaTeX e gerando PDF..."):
+    with console.status("[bold green]Gerando currículo em Word (.docx)..."):
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
         output_name = f"cv_{company_slug}"
         
-        tex_path = generate_latex(tailored_data, output_name)
-        pdf_path = compile_pdf(tex_path)
+        word_path = generate_word(tailored_data, output_name)
         
     console.print(f"\n[bold green]✅ Sucesso![/bold green]")
-    console.print(f"Código LaTeX gerado em: [cyan]{tex_path}[/cyan]")
-    if pdf_path:
-        console.print(f"PDF gerado em: [cyan]{pdf_path}[/cyan]")
-    else:
-        console.print("[yellow]Aviso:[/yellow] O arquivo LaTeX foi criado, mas pdflatex não foi encontrado ou falhou ao gerar o PDF.")
+    console.print(f"Currículo gerado em: [cyan]{word_path}[/cyan]")
 
 
 @cli.command()
 @click.option('--resume', type=click.Path(path_type=Path), default=DEFAULT_RESUME_PATH, help='Caminho para o currículo base')
 def build(resume: Path):
-    """Gera PDF do currículo base (sem adaptação para vaga)."""
+    """Gera currículo base em Word (.docx) sem adaptação para vaga."""
     raw_resume, resume_data = _load_resume(resume)
     
     if not resume_data:
         console.print("[red]Erro:[/red] Para fazer build do currículo base, ele precisa estar em formato YAML estruturado.")
         sys.exit(1)
         
-    with console.status("[bold green]Compilando LaTeX e gerando PDF..."):
-        tex_path = generate_latex(resume_data, "resume_base")
-        pdf_path = compile_pdf(tex_path)
+    with console.status("[bold green]Gerando currículo em Word (.docx)..."):
+        word_path = generate_word(resume_data, "resume_base")
         
     console.print(f"\n[bold green]✅ Sucesso![/bold green]")
-    console.print(f"Código LaTeX gerado em: [cyan]{tex_path}[/cyan]")
-    if pdf_path:
-        console.print(f"PDF gerado em: [cyan]{pdf_path}[/cyan]")
+    console.print(f"Currículo gerado em: [cyan]{word_path}[/cyan]")
 
 
 if __name__ == '__main__':

@@ -10,12 +10,12 @@ __pycache__/
 
 ia.py
 
-# Arquivos temporários/PDFs gerados
-*.pdf
+# Arquivos gerados
 data/
-
+output/
 *.docx
-output/
-
-*.text
-output/
+*.pdf
+*.tex
+*.aux
+*.log
+*.out
