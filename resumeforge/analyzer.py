@@ -76,6 +76,14 @@ def parse_job_posting(raw_text: str) -> JobPosting:
     prompt = f"""Você é um especialista em recrutamento. Extraia as informações estruturadas da vaga abaixo.
 Retorne APENAS o JSON que obedeça estritamente a este esquema JSON: {json.dumps(schema)}.
 
+REGRA CRÍTICA: O texto abaixo pode conter ruído de scraping web (menus, cabeçalhos, rodapés, copyrights,
+vagas similares, botões de navegação, recomendações de outras vagas, etc.).
+Ignore COMPLETAMENTE qualquer conteúdo que NÃO seja a descrição real da vaga
+(título, empresa, descrição, responsabilidades, requisitos, benefícios).
+Se houver trechos como "Vagas similares", "People also viewed", "Similar jobs",
+"Política de privacidade", "Todos os direitos reservados", copyrights, ou qualquer
+texto de rodapé/navegação, DESCARTE-OS e processe APENAS o conteúdo relevante da vaga.
+
 Texto da vaga:
 ---
 {raw_text}
@@ -132,6 +140,11 @@ def analyze_match(resume_text: str, job: JobPosting, resume_data: ResumeData | N
 
     prompt = f"""Você é um sistema ATS (Applicant Tracking System) corporativo de alta precisão, frio, analítico e rigoroso.
 Sua única diretriz é avaliar se o candidato possui as qualificações técnicas necessárias de forma literal.
+
+IMPORTANTE: Ao avaliar a vaga de emprego abaixo, ignore completamente qualquer ruído de scraping web:
+menus, cabeçalhos, rodapés, copyrights, vagas similares, botões de navegação, links,
+recomendações de outras vagas, termos de uso, política de privacidade, etc.
+Considere APENAS o conteúdo real da vaga (título, empresa, descrição, responsabilidades, requisitos).
 
 REGRAS DE AVALIAÇÃO CRÍTICA (NÃO SEJA CONDESCENDENTE):
 1. CORRESPONDÊNCIA REAL: Identifique como "matching_skills" apenas tecnologias explicitamente descritas no currículo. Não deduza conhecimento.
@@ -276,6 +289,11 @@ def generate_tailored_resume(
 
     prompt = f"""Você é um engenheiro de recrutamento e especialista em otimização de currículos para sistemas ATS.
 Sua missão é adaptar o currículo do candidato para maximizar o score de compatibilidade com a vaga abaixo, garantindo aprovação na triagem automatizada.
+
+IMPORTANTE: Ao analisar a vaga de emprego abaixo, ignore completamente qualquer ruído de scraping web:
+menus, cabeçalhos, rodapés, copyrights, vagas similares, botões de navegação, links,
+recomendações de outras vagas, termos de uso, política de privacidade, etc.
+Considere APENAS o conteúdo real da vaga (título, empresa, descrição, responsabilidades, requisitos).
 
 REGRAS DE OURO PARA BATER O ATS:
 1. MATCH DE PALAVRAS-CHAVE (HARD SKILLS): Identifique as tecnologias fundamentais da vaga (ex: Power BI, Tableau, SQL, Snowflake, DAX) e integre-as de forma orgânica e frequente no resumo profissional, na lista de habilidades e nos destaques das experiências. Use a terminologia exata da vaga.
