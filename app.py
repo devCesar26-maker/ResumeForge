@@ -1,5 +1,6 @@
 """Backend da Aplicação Web ResumeForge (Flask)."""
 
+import gc
 import time
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
@@ -93,8 +94,8 @@ def api_analyze():
             print(f"[Erro Analyze Match]: {e}")
             return jsonify({'error': f'Falha na análise de compatibilidade (Gemini): {str(e)}'}), 502
         
-        # Retorna os dados mapeados de forma segura usando o dump do Pydantic
-        return jsonify({
+        # Monta a resposta ANTES de liberar a memória
+        response = jsonify({
             'success': True,
             'job': {
                 'title': job.title,
@@ -106,6 +107,12 @@ def api_analyze():
                 'job_text': job_text
             }
         })
+        
+        # Libera objetos pesados da memória
+        del raw_resume, resume_data, job, match
+        gc.collect()
+        
+        return response
         
     except Exception as e:
         # Print detalhado no terminal para debugar em tempo real caso ocorra um erro imprevisto
@@ -142,13 +149,20 @@ def api_generate():
         
         word_path = generate_word(tailored_data, output_name)
         
-        return jsonify({
+        # Monta a resposta ANTES de liberar a memória
+        response = jsonify({
             'success': True,
             'cover_letter': cover_letter,
             'files': {
                 'word': f'/download/{word_path.name}',
             }
         })
+        
+        # Libera objetos pesados da memória
+        del raw_resume, resume_data, job, match, cover_letter, tailored_data
+        gc.collect()
+        
+        return response
         
     except Exception as e:
         print(f"\n[Erro Geração de Documentos]: {e}")
