@@ -1,15 +1,43 @@
 """Analisador híbrido: Groq (Velocidade no Parse) + Google Gemini (Rigor no Match e Qualidade na Geração)."""
 
 import json
+import re
 from groq import Groq
 from pydantic import ValidationError
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
+from google.genai.errors import APIError, ClientError, ServerError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from .config import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL
 from .models import JobPosting, MatchResult, ResumeData
+
+
+# ==========================================
+# SANITIZAÇÃO DE TEXTO
+# ==========================================
+
+def _sanitize_text(text: str) -> str:
+    """Limpa e normaliza texto antes de enviar para APIs de IA.
+
+    Remove caracteres nulos, quebras de linha excessivas, normaliza
+    espaços em branco e garante UTF-8 limpo.
+    """
+    if not text:
+        return ""
+    # Remove caracteres nulos e de controle (exceto quebras de linha e tabulações)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Remove BOM (Byte Order Mark)
+    text = text.lstrip('\ufeff')
+    # Normaliza quebras de linha: \r\n -> \n
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Remove mais de 2 quebras de linha consecutivas
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Remove espaços em branco no final de cada linha
+    text = re.sub(r' +\n', '\n', text)
+    # Remove espaços múltiplos consecutivos (preserva quebras de linha)
+    text = re.sub(r'([^\n]) {2,}', r'\1 ', text)
+    return text.strip()
 
 
 # ==========================================
@@ -39,6 +67,9 @@ def _get_groq_client() -> Groq:
 def parse_job_posting(raw_text: str) -> JobPosting:
     """Usa a Groq para extrair dados da vaga em milissegundos."""
     client = _get_groq_client()
+    
+    # Sanitiza o texto antes de enviar à API
+    raw_text = _sanitize_text(raw_text)
     
     schema = JobPosting.model_json_schema()
     
@@ -88,15 +119,16 @@ Texto da vaga:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(APIError)
+    retry=retry_if_exception_type(ServerError)
 )
 def analyze_match(resume_text: str, job: JobPosting, resume_data: ResumeData | None = None) -> MatchResult:
     """Usa o Gemini para analisar friamente a compatibilidade do currículo com a vaga."""
     client = _get_gemini_client()
     
-    resume_section = resume_text
+    # Sanitiza o texto antes de enviar à API
+    resume_section = _sanitize_text(resume_text)
     if resume_data:
-        resume_section = resume_data.model_dump_json()
+        resume_section = _sanitize_text(resume_data.model_dump_json())
 
     prompt = f"""Você é um sistema ATS (Applicant Tracking System) corporativo de alta precisão, frio, analítico e rigoroso.
 Sua única diretriz é avaliar se o candidato possui as qualificações técnicas necessárias de forma literal.
@@ -137,15 +169,29 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
         required=["score", "verdict", "matching_skills", "missing_skills", "transferable_skills", "strengths", "weaknesses", "suggestions"]
     )
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type='application/json',
-            response_schema=gemini_schema,
-            temperature=0.2,  # Subimos levemente para dar mais estabilidade na geração
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json',
+                response_schema=gemini_schema,
+                temperature=0.2,  # Subimos levemente para dar mais estabilidade na geração
+            )
         )
-    )
+    except ClientError as e:
+        print(f"\n[Erro Gemini - Requisição Inválida (analyze_match)]: {e}")
+        raise ValueError(
+            "Erro de validação na requisição ao Gemini. "
+            "O texto da vaga ou do currículo pode conter caracteres inválidos ou estar mal formatado. "
+            f"Detalhes: {e}"
+        ) from e
+    except ServerError as e:
+        print(f"\n[Erro Gemini - Servidor (analyze_match)]: {e}")
+        raise
+    except APIError as e:
+        print(f"\n[Erro Gemini - API (analyze_match)]: {type(e).__name__}: {e}")
+        raise
 
     try:
         dados_json = json.loads(response.text)
@@ -212,7 +258,7 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(APIError)
+    retry=retry_if_exception_type(ServerError)
 )
 def generate_tailored_resume(
     resume_text: str,
@@ -223,9 +269,10 @@ def generate_tailored_resume(
     """Usa o Gemini para reescrever o currículo com foco em passar no ATS."""
     client = _get_gemini_client()
 
-    resume_section = resume_text
+    # Sanitiza o texto antes de enviar à API
+    resume_section = _sanitize_text(resume_text)
     if resume_data:
-        resume_section = resume_data.model_dump_json()
+        resume_section = _sanitize_text(resume_data.model_dump_json())
 
     prompt = f"""Você é um engenheiro de recrutamento e especialista em otimização de currículos para sistemas ATS.
 Sua missão é adaptar o currículo do candidato para maximizar o score de compatibilidade com a vaga abaixo, garantindo aprovação na triagem automatizada.
@@ -254,15 +301,29 @@ Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
 
     resume_data_schema = ResumeData.model_json_schema()
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type='application/json',
-            response_schema=resume_data_schema,
-            temperature=0.3,
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json',
+                response_schema=resume_data_schema,
+                temperature=0.3,
+            )
         )
-    )
+    except ClientError as e:
+        print(f"\n[Erro Gemini - Requisição Inválida (generate_tailored_resume)]: {e}")
+        raise ValueError(
+            "Erro de validação na requisição ao Gemini. "
+            "O texto pode conter caracteres inválidos ou estar mal formatado. "
+            f"Detalhes: {e}"
+        ) from e
+    except ServerError as e:
+        print(f"\n[Erro Gemini - Servidor (generate_tailored_resume)]: {e}")
+        raise
+    except APIError as e:
+        print(f"\n[Erro Gemini - API (generate_tailored_resume)]: {type(e).__name__}: {e}")
+        raise
 
     try:
         dados_json = json.loads(response.text)
@@ -284,11 +345,13 @@ Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(APIError)
+    retry=retry_if_exception_type(ServerError)
 )
 def generate_cover_letter(resume_text: str, job: JobPosting, match: MatchResult) -> str:
     """Gera uma carta de apresentação rápida utilizando o Gemini."""
     client = _get_gemini_client()
+    # Sanitiza o texto
+    resume_text = _sanitize_text(resume_text)
 
     prompt = f"""Escreva uma Carta de Apresentação concisa (de no máximo 3 parágrafos curtos) para a vaga especificada.
 
@@ -304,12 +367,26 @@ DESTAQUES DO CANDIDATO:
 
 Gere o texto da carta diretamente, sem cabeçalhos antiquados de endereço, de modo que esteja pronta para ser utilizada como corpo de e-mail profissional."""
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.5,
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.5,
+            )
         )
-    )
+    except ClientError as e:
+        print(f"\n[Erro Gemini - Requisição Inválida (generate_cover_letter)]: {e}")
+        raise ValueError(
+            "Erro de validação na requisição ao Gemini. "
+            "O texto pode conter caracteres inválidos ou estar mal formatado. "
+            f"Detalhes: {e}"
+        ) from e
+    except ServerError as e:
+        print(f"\n[Erro Gemini - Servidor (generate_cover_letter)]: {e}")
+        raise
+    except APIError as e:
+        print(f"\n[Erro Gemini - API (generate_cover_letter)]: {type(e).__name__}: {e}")
+        raise
 
     return response.text
