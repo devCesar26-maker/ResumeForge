@@ -11,6 +11,16 @@ function appData() {
         matchResult: null,
         sessionData: null,
         generatedFiles: null,
+        generationMessage: 'Preparando documentos...',
+        generationMessages: [
+            'Preparando documentos...',
+            'Analisando seu currículo...',
+            'Reescrevendo experiências para o ATS...',
+            'Escrevendo carta de apresentação...',
+            'Gerando arquivo Word...',
+            'Quase lá...'
+        ],
+        generationTimer: null,
 
         handleFileSelect(event) {
             const files = event.target.files;
@@ -30,11 +40,14 @@ function appData() {
         async scrapeJob() {
             if (!this.jobUrl) return;
             this.isScraping = true;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 45000);
             try {
                 const response = await fetch('/api/scrape', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: this.jobUrl })
+                    body: JSON.stringify({ url: this.jobUrl }),
+                    signal: controller.signal
                 });
                 const data = await response.json();
                 if (response.ok) {
@@ -44,8 +57,13 @@ function appData() {
                     alert('Erro ao extrair vaga: ' + data.error);
                 }
             } catch (error) {
-                alert('Erro de rede: ' + error.message);
+                if (error.name === 'AbortError') {
+                    alert('A extração da vaga demorou demais e foi cancelada. Tente novamente.');
+                } else {
+                    alert('Erro de rede: ' + error.message);
+                }
             } finally {
+                clearTimeout(timeoutId);
                 this.isScraping = false;
             }
         },
@@ -61,10 +79,16 @@ function appData() {
             formData.append('resume', this.file);
             formData.append('job_text', this.jobText);
 
+            // Timeout de segurança: na primeira vez (cold start do Render)
+            // a análise pode demorar bem mais que o normal.
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 150000);
+
             try {
                 const response = await fetch('/api/analyze', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
                 const data = await response.json();
                 
@@ -78,8 +102,13 @@ function appData() {
                     alert('Erro na análise: ' + data.error);
                 }
             } catch (error) {
-                alert('Erro de conexão: ' + error.message);
+                if (error.name === 'AbortError') {
+                    alert('A análise demorou demais e foi cancelada. Se for a primeira vez, pode ser o cold start do servidor — tente novamente.');
+                } else {
+                    alert('Erro de conexão: ' + error.message);
+                }
             } finally {
+                clearTimeout(timeoutId);
                 this.isAnalyzing = false;
             }
         },
@@ -139,11 +168,24 @@ function appData() {
             
             this.isGenerating = true;
             
+            // Feedback de progresso rotativo: o usuário não acha que travou
+            this.generationMessage = this.generationMessages[0];
+            let step = 0;
+            this.generationTimer = setInterval(() => {
+                step = (step + 1) % this.generationMessages.length;
+                this.generationMessage = this.generationMessages[step];
+            }, 10000);
+
+            // Timeout de segurança: geração + cold start do Render pode passar de 60s
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 150000);
+
             try {
                 const response = await fetch('/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.sessionData)
+                    body: JSON.stringify(this.sessionData),
+                    signal: controller.signal
                 });
                 
                 const data = await response.json();
@@ -154,8 +196,14 @@ function appData() {
                     alert('Erro ao gerar documentos: ' + data.error);
                 }
             } catch (error) {
-                alert('Erro de conexão: ' + error.message);
+                if (error.name === 'AbortError') {
+                    alert('A geração demorou demais e foi cancelada. Se for a primeira vez, pode ser o cold start do servidor — tente novamente.');
+                } else {
+                    alert('Erro de conexão: ' + error.message);
+                }
             } finally {
+                clearTimeout(timeoutId);
+                clearInterval(this.generationTimer);
                 this.isGenerating = false;
             }
         }

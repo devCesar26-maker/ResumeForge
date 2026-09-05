@@ -2,12 +2,14 @@
 
 import gc
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 from pydantic import ValidationError
 
 from resumeforge.config import DATA_DIR, OUTPUT_DIR
+from resumeforge.models import JobPosting, MatchResult
 from resumeforge.resume_parser import parse_resume
 from resumeforge.scraper import scrape_job, clean_job_text_content
 from resumeforge.analyzer import parse_job_posting, analyze_match, generate_tailored_resume, generate_cover_letter
@@ -105,7 +107,11 @@ def api_analyze():
             'match': match.model_dump(), # Evita esquecer campos novos (strengths, weaknesses, etc.)
             'session_data': {
                 'resume_path': str(resume_path),
-                'job_text': job_text
+                'job_text': job_text,
+                # Reenvia job + match já calculados para o /api/generate NÃO
+                # precisar reanalisar a vaga nem refazer o analyze_match no Gemini
+                'job': job.model_dump(exclude={'raw_text'}),
+                'match': match.model_dump(exclude={'tailored_resume'}),
             }
         })
         
@@ -135,14 +141,25 @@ def api_generate():
     try:
         # Recupera dados
         raw_resume, resume_data = parse_resume(resume_path)
-        job = parse_job_posting(job_text)
-        match = analyze_match(raw_resume, job, resume_data)
         
-        # Gera carta de apresentação
-        cover_letter = generate_cover_letter(raw_resume, job, match)
+        # Reutiliza job + match calculados na etapa /api/analyze, evitando
+        # refazer parse da vaga (Groq) e analyze_match (Gemini) — as duas
+        # chamadas mais custosas desta etapa. Fallback: recalcula se ausentes.
+        if data.get('job') and data.get('match'):
+            job = JobPosting(**data['job'])
+            match = MatchResult(**data['match'])
+        else:
+            job = parse_job_posting(job_text)
+            match = analyze_match(raw_resume, job, resume_data)
         
-        # Adapta currículo
-        tailored_data = generate_tailored_resume(raw_resume, job, match, resume_data)
+        # Gera carta de apresentação e currículo adaptado em PARALELO:
+        # são chamadas independentes ao Gemini (IO-bound), então rodam
+        # em threads sem necessidade de reescrever tudo em async.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_resume = executor.submit(generate_tailored_resume, raw_resume, job, match, resume_data)
+            future_letter = executor.submit(generate_cover_letter, raw_resume, job, match)
+            tailored_data = future_resume.result()
+            cover_letter = future_letter.result()
         
         # Arquivos
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
@@ -168,6 +185,12 @@ def api_generate():
     except Exception as e:
         print(f"\n[Erro Geração de Documentos]: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/healthz')
+def healthz():
+    """Endpoint leve para health-check / keep-alive (ex.: cron-job.org)."""
+    return jsonify({'status': 'ok'}), 200
 
 
 @app.route('/download/<filename>')
