@@ -11,6 +11,18 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# ── Labels de seção do currículo ─────────────────────────────────────
+# Centralizados aqui para fácil customização futura.
+SECTION_LABELS: dict[str, str] = {
+    "summary": "Resumo Profissional",
+    "experience": "Experiência Profissional",
+    "education": "Formação Acadêmica",
+    "skills": "Habilidades Técnicas",
+    "projects": "Projetos",
+    "languages": "Idiomas",
+    "certifications": "Certificações",
+}
+
 # ── Caminhos ─────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -26,7 +38,7 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # ── API ──────────────────────────────────────────────────────────────
 
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL")  # O modelo mais rápido e inteligente para JSON estruturado na Groq

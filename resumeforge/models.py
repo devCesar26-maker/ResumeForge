@@ -104,6 +104,7 @@ class JobPosting(BaseModel):
     requirements: list[str] = Field(default_factory=list)
     responsibilities: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    benefits: list[str] = Field(default_factory=list, description="Benefícios da vaga (convênio, plano, VR, etc.)")
     seniority_level: str = ""
     raw_text: str = ""
 

@@ -2,6 +2,7 @@
 
 import json
 import re
+import unicodedata
 from groq import Groq
 from pydantic import ValidationError
 from google import genai
@@ -9,8 +10,9 @@ from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
-from .config import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL
+from .config import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL, SECTION_LABELS
 from .models import JobPosting, MatchResult, ResumeData
+from .scraper import clean_job_text_content
 
 
 # ==========================================
@@ -41,6 +43,146 @@ def _sanitize_text(text: str) -> str:
 
 
 # ==========================================
+# EXTRAÇÃO DE TERMOS DE SKILL (usada na penalidade de cobertura)
+# ==========================================
+
+# Palavras genéricas de anúncios de vaga (PT/EN) que NUNCA devem contar como "skill"
+# na checagem de cobertura — frases de requisitos são repletas delas.
+_VAGA_STOPWORDS_RAW: str = """
+    a ao aos as à às o os um uma uns umas de do da dos das dum duma em no na nos nas num numa
+    com contra entre para por perante sem sob sobre até desde e ou nem mas que se como quando
+    onde porque porém também mais menos muito muita muitos muitas lhe pra pro
+    este esta estes estas esse essa esses essas aquele aquela aqueles aquelas isto isso aquilo
+    the a an of in on to for with without by from at via and or but not if then than while when
+    where which who whom whose what how why as is are was were be been being will can may
+    ser é são era eram foi foram será serão sendo sido estar estava estavam esteve estarão
+    ter tem têm tinha tinha tive teve terá terão possui possuem possuía
+    conhecimento conhecimentos básico básica básicos básicas requisito requisitos
+    indispensável indispensáveis obrigatório obrigatória obrigatórios obrigatórias
+    desejável desejáveis diferencial diferenciais
+    experiência familiaridade vivência domínio noções noção conceitos sólido sólida
+    avançado avançada intermediário intermediária pleno plena júnior jr junior
+    sênior senior estagiário estagiária trainee
+    nível níveis anos ano dia dias
+    capacidade realizar manutenção ajustes ajuste criação construção desenvolvimento
+    elaborar elaboração extração análise tratamento gestão atuação atuar apoio apoiar suporte
+    consultas chamados rotina rotinas atividades atividade fluxo fluxos processo processos
+    ferramenta ferramentas plataforma plataformas software softwares tecnologia tecnologias
+    times time equipe equipes comunicação colaboração organização proatividade comprometimento
+    autonomia autônomo autônoma ambiente metodologia metodologias método métodos ágil ágeis agilidade
+    dados data métrica métricas indicador indicadores relatório relatórios dashboard dashboards
+    queries query scripts script automação automações modelos modelo tabela tabelas coluna colunas
+    linhas linha arquivo arquivos documentos documentação bases base banco bancos
+    informações informação pipelines pipeline insights insight business intelligence machine learning deep
+    análise analise analises análises analysis analytics reporting reports experience analysis
+    analista analistas analyst desenvolvedor desenvolvedora desenvolvedores developer developers
+    engenheiro engenheira engenheiros engineer engineers cientista consultor consultores
+    especialista especialistas coordenador coordenadora arquiteto arquiteta designer
+    profissional profissionais cargo cargos função funções posição posições vaga vagas
+    trabalho empresa empresas remoto remota presencial hibrido híbrido
+    habilidades competência competências qualificação qualificações
+    atender receber tratar identificar analisar extrair transformar carregar automatizar otimizar
+    avaliar garantir participar colaborar monitorar documentar testar implementar desenhar modelar
+    buscar esperar possuir dominar conhecer saber usar utilizar aplicar gerar produzir entregar
+    acompanhar conduzir liderar coordenar gerenciar administrar auxiliar suportar resolver
+    solucionar diagnosticar prevenir mitigar reduzir aumentar melhorar evoluir migrar integrar
+    configurar instalar estruturar organizar planejar executar validar revisar publicar comunicar
+    apresentar reportar mensurar controlar definir contribuir fomentar disseminar construir manter
+    criar elaborar desenvolver atuar apoiar
+    considerado considerada considerados consideradas alinhado alinhada alinhados alinhadas
+    voltado voltada voltados voltadas focado focada focados focadas
+    existente existentes diversos diversas principais principal ideal
+    candidato candidata organizado organizada organizados organizadas proativo proativa proativos proativas
+    comunicativo comunicativa dinâmico dinâmica flexível resiliente motivado motivada dedicado dedicada
+    criativo criativa colaborativo colaborativa analítico analítica estratégico estratégica
+    resultado resultados solução soluções melhoria melhorias entrega entregas
+    diário diária semanais mensais contínua contínuo
+""".split()
+
+
+def _normalizar_termo(s: str) -> str:
+    """Lowercase + remove acentos, espaços e hífens — para busca por substring."""
+    s = unicodedata.normalize('NFKD', s or '')
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r'[\s\-]+', '', s.lower())
+
+
+_VAGA_STOPWORDS: frozenset[str] = frozenset(_normalizar_termo(p) for p in _VAGA_STOPWORDS_RAW)
+
+
+def _e_stopword(palavra: str) -> bool:
+    """True se a palavra é conector/descritor genérico (nunca pode ser uma skill)."""
+    return _normalizar_termo(palavra) in _VAGA_STOPWORDS
+
+
+def _limpar_token(palavra: str) -> str:
+    """Remove pontuação inicial/final, preservando símbolos internos (C#, .NET, Python 3.x)."""
+    return re.sub(r'^[\W_]+|[\W_]+$', '', palavra)
+
+
+def _token_parece_skill(palavra: str) -> bool:
+    """Heurística: token com cara de tecnologia dentro de uma frase de requisito."""
+    norm = _normalizar_termo(palavra)
+    if len(norm) < 2 or _e_stopword(palavra):
+        return False
+    # Acrônimos/marcas (SQL, AWS, PowerBI) ou símbolos técnicos (C#, .NET, Node.js)
+    if any(c.isupper() for c in palavra) or re.search(r'[#.+_/]', palavra):
+        return True
+    # Palavras comuns com 3+ letras também podem ser skills (python, docker, etl...)
+    return len(norm) >= 3
+
+
+def _extrair_termos_de_skill(itens_raw: list[str]) -> tuple[list[str], list[str]]:
+    """Converte itens crus (keywords, requisitos, título) em termos que realmente são skills.
+
+    Frases inteiras de requisitos (ex.: "Conhecimento básico em SQL — requisito
+    indispensável") NUNCA entram na comparação literal: são quebradas em segmentos
+    e apenas os tokens com cara de tecnologia são mantidos ("SQL").
+
+    Retorna (termos_normalizados, termos_originais_para_log), ambos sem duplicatas.
+    """
+    termos_norm: list[str] = []
+    termos_display: list[str] = []
+    vistos: set[str] = set()
+
+    def _add(norm: str, display: str) -> None:
+        if norm and norm not in vistos:
+            vistos.add(norm)
+            termos_norm.append(norm)
+            termos_display.append(display)
+
+    for item in itens_raw:
+        if not item or not item.strip():
+            continue
+        # Separa por pontuação/travessões comuns em listas de vaga
+        for segmento in re.split(r'[,\/;:|()\[\]"\'—–]|\s-\s', item):
+            segmento = segmento.strip()
+            if not segmento:
+                continue
+            palavras = [p for p in (w.strip() for w in segmento.split()) if p]
+            palavras_limpas = [_limpar_token(p) for p in palavras]
+            palavras_limpas = [p for p in palavras_limpas if p]
+            if not palavras_limpas:
+                continue
+
+            tokens_uteis = [p for p in palavras_limpas if not _e_stopword(p)]
+            if not tokens_uteis:
+                continue
+
+            # Termo curto sem conectivos (ex.: 'Power BI', 'SQL', 'Data Analyst')
+            if len(palavras_limpas) <= 3 and len(tokens_uteis) == len(palavras_limpas):
+                _add(_normalizar_termo(' '.join(palavras_limpas)), segmento)
+                continue
+
+            # Segmento frasal → mantém apenas tokens com cara de tecnologia
+            for p in palavras_limpas:
+                if _token_parece_skill(p):
+                    _add(_normalizar_termo(p), p)
+
+    return termos_norm, termos_display
+
+
+# ==========================================
 # INICIALIZAÇÃO DOS CLIENTES
 # ==========================================
 
@@ -68,21 +210,32 @@ def parse_job_posting(raw_text: str) -> JobPosting:
     """Usa a Groq para extrair dados da vaga em milissegundos."""
     client = _get_groq_client()
     
-    # Sanitiza o texto antes de enviar à API
+    # Aplica pipeline de limpeza e normalização de headers
+    raw_text = clean_job_text_content(raw_text)
     raw_text = _sanitize_text(raw_text)
     
     schema = JobPosting.model_json_schema()
     
-    prompt = f"""Você é um especialista em recrutamento. Extraia as informações estruturadas da vaga abaixo.
+    prompt = f"""Você é um especialista em recrutamento e análise técnica de vagas.
+Extraia as informações estruturadas da vaga de emprego abaixo.
 Retorne APENAS o JSON que obedeça estritamente a este esquema JSON: {json.dumps(schema)}.
 
-REGRA CRÍTICA: O texto abaixo pode conter ruído de scraping web (menus, cabeçalhos, rodapés, copyrights,
-vagas similares, botões de navegação, recomendações de outras vagas, etc.).
-Ignore COMPLETAMENTE qualquer conteúdo que NÃO seja a descrição real da vaga
-(título, empresa, descrição, responsabilidades, requisitos, benefícios).
-Se houver trechos como "Vagas similares", "People also viewed", "Similar jobs",
-"Política de privacidade", "Todos os direitos reservados", copyrights, ou qualquer
-texto de rodapé/navegação, DESCARTE-OS e processe APENAS o conteúdo relevante da vaga.
+ESTRUTURA DE HEADERS EM MARKDOWN:
+O texto da vaga utiliza cabeçalhos em Markdown (`## Header`) para delimitar o início de cada seção, tais como:
+- `## Responsabilidades e Atribuições`
+- `## Requisitos e Qualificações`
+- `## Diferenciais`
+- `## Benefícios`
+- `## Sobre a Empresa` / `## Sobre a Vaga`
+
+REGRA CRÍTICA:
+Ignore COMPLETAMENTE qualquer conteúdo que NÃO pertença à vaga principal.
+Se houver trechos como "Vagas similares", "Outras vagas", "People also viewed", rodapés, menus ou avisos de navegação, DESCARTE-OS.
+Oriente-se pelos cabeçalhos `## Header` para extrair com exatidão as responsabilidades, requisitos mandatórios, diferenciais e benefícios.
+
+Campo 'benefits': Extraia separadamente os benefícios oferecidos pela vaga.
+Exemplos: plano de saúde, vale refeição, vale alimentação, seguro de vida, home office, auxílio creche, PLR, bônus anual, etc.
+Se não houver benefícios mencionados, retorne uma lista vazia.
 
 Texto da vaga:
 ---
@@ -207,27 +360,84 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
         raise
 
     try:
+        # ── LOG DO JSON BRUTO DO GEMINI (auditoria da causa raiz) ──
+        print("\n" + "="*60)
+        print("[AnalyzeMatch] JSON BRUTO RETORNADO PELO GEMINI (response.text):")
+        print(response.text)
+        print("="*60 + "\n")
+
         dados_json = json.loads(response.text)
-        
-        # Conversão numérica do score obtido do LLM
-        score_bruto = dados_json.get("score", "0")
+
+        # Extrai as listas de skills ANTES do recálculo — elas são a fonte de verdade
+        def extrair_lista(chave: str) -> list[str]:
+            valores = dados_json.get(chave, [])
+            if not isinstance(valores, list):
+                return []
+            return [str(v) for v in valores if v is not None]
+
+        matching_skills = extrair_lista("matching_skills")
+        missing_skills = extrair_lista("missing_skills")
+
+        # ── Score bruto do Gemini: usado apenas como fallback / referência ──
+        score_bruto_raw = dados_json.get("score", "0")
         try:
-            score = int(float(str(score_bruto).replace("%", "").strip()))
+            score_bruto = int(float(str(score_bruto_raw).replace("%", "").strip()))
         except (ValueError, TypeError):
-            score = 0
-            
-        score = max(0, min(100, score))
+            score_bruto = 0
+        score_bruto = max(0, min(100, score_bruto))
 
-        # Regra de penalização manual estrita pós-IA
-        texto_curriculo_clean = resume_section.lower()
-        vaga_exige_sql = any("sql" in req.lower() for req in job.requirements) or "sql" in job.title.lower()
-        vaga_exige_tableau = any("tableau" in req.lower() for req in job.requirements) or "tableau" in job.title.lower()
-        
-        has_sql = "sql" in texto_curriculo_clean
-        has_tableau = "tableau" in texto_curriculo_clean
+        # ── RECÁLCULO DO SCORE NO BACKEND (não confia cegamente no número solto do LLM) ──
+        total_skills = len(matching_skills) + len(missing_skills)
+        if total_skills > 0:
+            score_calculado = round((len(matching_skills) / total_skills) * 100)
+        else:
+            # Fallback: se o Gemini retornou AMBAS as listas vazias, usa o score bruto
+            score_calculado = score_bruto
 
-        if (vaga_exige_sql and not has_sql) or (vaga_exige_tableau and not has_tableau):
-            score = min(score, 35)
+        print(f"[AnalyzeMatch] Gemini -> score_bruto={score_bruto} | "
+              f"matching={len(matching_skills)} | missing={len(missing_skills)}")
+        print(f"[AnalyzeMatch] Score recalculado via cobertura (matching/total): {score_calculado}")
+
+        score = score_calculado
+
+        # ── Penalização genérica pós-IA: cobertura de skills críticas ──
+        # IMPORTANTE: a cobertura só conta termos com cara de skill (SQL, Power BI, Python,
+        # ETL...). Frases inteiras de requisitos (ex.: "Conhecimento básico em SQL — requisito
+        # indispensável") jamais entram na comparação literal — senão o score seria penalizado
+        # mesmo com a skill presente no currículo.
+        termos_criticos_raw: list[str] = job.keywords or []
+        if not termos_criticos_raw:
+            # Fallback apenas se o parser da vaga não retornou keywords
+            termos_criticos_raw = list(job.requirements) + [job.title]
+
+        termos_criticos, termos_criticos_display = _extrair_termos_de_skill(termos_criticos_raw)
+        texto_normalizado = _normalizar_termo(resume_section)
+
+        if termos_criticos:
+            termos_presentes = sum(1 for t in termos_criticos if t in texto_normalizado)
+            critical_coverage = termos_presentes / len(termos_criticos)
+
+            print(f"[AnalyzeMatch] Termos críticos (skills) avaliados: {termos_criticos_display}")
+
+            termos_ausentes = [
+                d for d, t in zip(termos_criticos_display, termos_criticos)
+                if t not in texto_normalizado
+            ]
+
+            if critical_coverage < 0.8:
+                print(f"[AnalyzeMatch] Coverage de skills críticas: {critical_coverage:.0%} "
+                      f"({termos_presentes}/{len(termos_criticos)})")
+                print(f"[AnalyzeMatch] Termos críticos ausentes no currículo: {termos_ausentes}")
+
+            if critical_coverage >= 0.8:
+                pass  # sem penalidade adicional
+            elif critical_coverage >= 0.5:
+                score = min(score, 60)
+            else:
+                score = min(score, 35)
+        else:
+            print("[AnalyzeMatch] Nenhum termo de skill identificado nas keywords/requisitos — "
+                  "penalidade de cobertura ignorada.")
 
         # Cálculo dinâmico do veredicto baseado no score final recalculado
         if score >= 75:
@@ -237,18 +447,26 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
         else:
             verdict = "BAIXA"
 
-        def extrair_lista(chave: str) -> list[str]:
-            valores = dados_json.get(chave, [])
-            if not isinstance(valores, list):
-                return []
-            return [str(v) for v in valores if v is not None]
+        # ── REDE DE SEGURANÇA: coerência visual score ↔ missing_skills ──
+        if len(missing_skills) == 0 and len(matching_skills) > 0 and score < 75:
+            print(f"[AVISO] Score {score} inconsistente com missing_skills vazio — forçando revisão")
+            score = max(score, 80)
+            # Recalcula o veredicto após a correção do score
+            if score >= 75:
+                verdict = "ALTA"
+            elif score >= 45:
+                verdict = "MEDIA"
+            else:
+                verdict = "BAIXA"
+
+        print(f"[AnalyzeMatch] SCORE FINAL: {score}/100 | VERDICT: {verdict}")
 
         # Montamos o MatchResult garantindo que tailored_resume seja passado como None
         return MatchResult(
             score=score,
             verdict=verdict,
-            matching_skills=extrair_lista("matching_skills"),
-            missing_skills=extrair_lista("missing_skills"),
+            matching_skills=matching_skills,
+            missing_skills=missing_skills,
             transferable_skills=extrair_lista("transferable_skills"),
             strengths=extrair_lista("strengths"),
             weaknesses=extrair_lista("weaknesses"),
@@ -301,6 +519,14 @@ REGRAS DE OURO PARA BATER O ATS:
 3. ORDENAÇÃO DE RELEVÂNCIA: Reorganize as categorias de habilidades (skills) e a ordem dos itens de experiência para que as competências e projetos mais alinhados com a vaga atual fiquem visíveis logo no topo.
 4. INTEGRIDADE ABSOLUTA DE DADOS: Não altere nenhuma data, nome de empresa ou cargo ocupado. Nunca invente experiências fictícias.
 5. SÍNTESE DO RESUMO: Adapte o 'summary' (resumo profissional) do currículo para ser um gancho perfeito de no máximo 4 linhas, contendo as principais tecnologias e anos de experiência exigidos pela vaga.
+6. PRESERVAÇÃO EXATA DE NOMES DE SEÇÃO: NÃO altere, traduza ou normalize os títulos das seções do currículo. Use EXATAMENTE os nomes listados abaixo como títulos de cada seção no JSON gerado (campo `category` para skills, e os campos de estrutura do ResumeData para as demais seções). Se o currículo original usa "Formação Acadêmica", NÃO gire "Educação" — preserve o termo original.
+
+NOMES EXATOS DAS SEÇÕES (use estes valores ao gerar o JSON):
+- Resumo Profissional (campo: summary)
+- Experiência Profissional (campo: experience)
+- Formação Acadêmica (campo: education)
+- Habilidades Técnicas (campo: skills — use o rótulo original como `category`)
+- Projetos (campo: projects)
 
 CURRÍCULO ORIGINAL:
 ---

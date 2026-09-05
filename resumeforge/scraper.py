@@ -1,280 +1,501 @@
+"""Scraper de vagas de emprego — funciona em qualquer plataforma.
+
+Pipeline:
+  1. Extração bruta (trafilatura markdown → readability-lxml → BeautifulSoup com conversão de tags)
+  2. Limpeza de whitespace (indentação, linhas vazias, espaços múltiplos)
+  3. Deduplicação de linhas (LinkedIn renderiza conteúdo 2x)
+  4. Corte de cauda (ruído: vagas similares, sidebar, rodapé)
+  5. Normalização de headers (Heurística & Regex: ## Responsabilidades, ## Requisitos, etc.)
+  6. Limpeza de artefatos (bullets isolados, indentação sidebar)
+"""
 import os
 import re
-from urllib.parse import quote
+import unicodedata
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from pathlib import Path
 
+try:
+    import trafilatura
+    HAS_TRAFILATURA = True
+except ImportError:
+    HAS_TRAFILATURA = False
 
-def prepare_url(url: str) -> str:
-    """
-    Identifica a plataforma e prepara a URL.
-    Se for LinkedIn, converte para a página de visualização pública (essencial para evitar o 404).
-    """
-    if "linkedin.com" in url:
-        # Captura o ID numérico da vaga na URL do LinkedIn
-        match = re.search(r'(?:jobs/view/|jobId=|currentJobId=)(\d+)', url)
-        if match:
-            job_id = match.group(1)
-            # Retorna a URL de visualização pública padrão (muito mais segura contra bloqueios)
-            return f"https://www.linkedin.com/jobs/view/{job_id}"
-            
-    return url
+try:
+    from readability import Document as ReadabilityDocument
+    HAS_READABILITY = True
+except ImportError:
+    HAS_READABILITY = False
 
 
-def scrape_job_url(url: str) -> str:
-    """Acessa a vaga de forma resiliente usando a API do Scrape.do com a URL pública corrigida."""
-    token = os.getenv("SCRAPEDO_TOKEN")
-    
-    if not token:
-        print("Aviso: Chave SCRAPEDO_TOKEN não encontrada no .env. Usando requisição direta.")
-        return scrape_job_direct_fallback(url)
+# ════════════════════════════════════════════════════════════════════
+# HELPERS
+# ════════════════════════════════════════════════════════════════════
 
-    target_url = prepare_url(url)
-    print(f"Buscando vaga via Scrape.do em: {target_url}")
-
-    # CONFIGURAÇÃO DE SUCESSO PARA O LINKEDIN:
-    # - super=true: Ativa proxies residenciais para passar pelo bloqueio
-    # - render=true: Necessário para a página pública padrão carregar todo o conteúdo via JS
-    api_url = f"https://api.scrape.do?token={token}&url={quote(target_url)}&super=true&render=true"
-
-    try:
-        # Timeout ligeiramente maior porque proxies residenciais e renderização JS levam mais tempo
-        response = requests.get(api_url, timeout=45)
-        
-        if response.status_code != 200:
-            print(f"Erro na API Scrape.do (Status {response.status_code}): {response.text}")
-            return ""
-
-        html_content = response.text
-        soup = BeautifulSoup(html_content, 'html.parser')
-
-        # 1. Extração do Título da Vaga
-        titulo = ""
-        seletores_titulo = [
-            '.top-card-layout__title',                      # LinkedIn Público
-            'h1.top-card-layout__title',
-            '.job-details-jobs-unified-top-card__job-title', # LinkedIn Logado
-            'h1'                                            # Fallback genérico
-        ]
-        for seletor in seletores_titulo:
-            elemento_titulo = soup.select_one(seletor)
-            if elemento_titulo:
-                texto = elemento_titulo.get_text()
-                if texto.strip() and "linkedin" not in texto.lower():
-                    titulo = texto.strip()
-                    break
-
-        # 2. Extração do Conteúdo (Sobre a Vaga)
-        sobre_vaga = ""
-        seletores_sobre = [
-            '.description__text',                           # LinkedIn Público (Classe principal)
-            '.show-more-less-html__markup',                  # Conteúdo interno da descrição
-            '#job-details',                                 # LinkedIn Logado
-            '.jobs-description'
-        ]
-        for seletor in seletores_sobre:
-            elemento_sobre = soup.select_one(seletor)
-            if elemento_sobre:
-                sobre_vaga = str(elemento_sobre)
-                break
-
-        # Se falhar nos seletores específicos, limpa e retorna a página inteira
-        if not titulo and not sobre_vaga:
-            print("Seletores falharam. Retornando fallback de texto limpo.")
-            return clean_html(html_content)
-
-        sobre_vaga_limpo = clean_html(sobre_vaga) if sobre_vaga else ""
-        titulo_final = titulo if titulo else "Título não identificado"
-
-        return f"VAGA: {titulo_final}\n\nSOBRE A VAGA:\n{sobre_vaga_limpo}"
-
-    except Exception as e:
-        print(f"Erro na raspagem com Scrape.do: {e}")
-        return ""
+def _strip_accents(text: str) -> str:
+    nfkd = unicodedata.normalize('NFKD', text)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c))
 
 
-def scrape_job_direct_fallback(url: str) -> str:
-    """Fallback simples se você estiver sem créditos ou sem token."""
-    try:
-        target_url = prepare_url(url)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        response = requests.get(target_url, headers=headers, timeout=15)
-        return clean_html(response.text)
-    except Exception as e:
-        print(f"Erro no fallback direto: {e}")
-        return ""
-
-def clean_html(html: str) -> str:
-    """Remove tags inúteis e corta propagandas/termos de privacidade do final para acelerar a IA."""
-    if not html:
-        return ""
-    soup = BeautifulSoup(html, 'html.parser')
-
-    # 1. Remove elementos visuais e interativos que não trazem conteúdo real da vaga
-    for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'noscript', 'button', 'svg', 'form']):
-        tag.decompose()
-
-    # 2. Extrai o texto limpo
-    text = soup.get_text(separator='\n', strip=True)
-    
-    # 3. Organiza quebras de linhas
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    texto_limpo = '\n'.join(lines)
-
-    # 4. CORTE DE RUÍDO (A mágica da velocidade):
-    # Identifica onde começam os textos institucionais ou avisos de privacidade e corta dali para baixo.
-    padroes_de_corte = [
-        r"(?i)how\s+jobgether\s+works",
-        r"(?i)why\s+apply\s+through",
-        r"(?i)data\s+privacy\s+notice",
-        r"(?i)sobre\s+o\s+jobgether",
-        r"(?i)politica\s+de\s+privacidade"
-    ]
-    
-    for padrao in padroes_de_corte:
-        match = re.search(padrao, texto_limpo)
-        if match:
-            # Corta o texto exatamente onde o padrão foi encontrado
-            texto_limpo = texto_limpo[:match.start()].strip()
-            break # Interrompe no primeiro corte identificado
-
-    return texto_limpo
+def _normalize_line(line: str) -> str:
+    """Colapsa espaços múltiplos e faz strip — para comparação."""
+    return re.sub(r'\s+', ' ', line.strip())
 
 
-# ── Lista consolidada de termos de corte (PT + EN) ─────────────────
-# Qualquer linha que comece com um desses termos causa o corte de
-# todo o texto restante, preservando apenas a descrição da vaga.
-_CUT_PATTERNS: list[str] = [
-    # ── Inglês — Vagas similares / recomendações ──
-    r'(?i)^\s*similar\s+jobs?\s*$'
-    ,r'(?i)^\s*similar\s+job\s+searches?\s*$'
-    ,r'(?i)^\s*people\s+also\s+viewed\s*$'
-    ,r'(?i)^\s*you\s+might\s+also\s+like\s*$'
-    ,r'(?i)^\s*recommended\s+for\s+you\s*$'
-    ,r'(?i)^\s*jobs\s+you\s+might\s+be\s+interested\s+in\s*$'
-    ,r'(?i)^\s*explore\s+(top\s+content|your\s+career\s+options)\s*$'
-    ,r'(?i)^\s*be\s+the\s+first\s+to\s+apply\s*$'
-    ,r'(?i)^\s*see\s+who\s+you\s+know\s+at\s+.*'
-    ,r'(?i)^\s*\d+\s+followers?\s*$'
-    ,r'(?i)^\s*follow\s+.*\s+to\s+stay\s+updated'
-    # ── Português — Vagas similares / recomendações ──
-    ,r'(?i)^\s*vagas?\s+similares?\s*$'
-    ,r'(?i)^\s*outras?\s+vagas?\s*$'
-    ,r'(?i)^\s*quem\s+viu\s+esta\s+vaga\s*$'
-    ,r'(?i)^\s*quem\s+voc[êe]\s+tamb[ée]m\s+viu\s*$'
-    ,r'(?i)^\s*vagas?\s+(que\s+)?voc[êe]\s+tamb[ée]m\s+gostaria\s*$'
-    ,r'(?i)^\s*vagas?\s+recomendadas?\s*$'
-    ,r'(?i)^\s*explorar\s+(mais\s+)?conteúdo\s*$'
-    ,r'(?i)^\s*explorar\s+suas\s+opções\s+de\s+carreira\s*$'
-    ,r'(?i)^\s*seja\s+o\s+primeiro\s+a\s+candidatar\s*$'
-    ,r'(?i)^\s*veja\s+quem\s+voc[êe]\s+conhece\s+na\s+.*'
-    ,r'(?i)^\s*\d+\s+seguidores?\s*$'
-    ,r'(?i)^\s*siga\s+.*\s+para\s+manter\s+atualizado'
-    # ── Autenticação / paywall ──
-    ,r'(?i)^\s*(join|sign\s+in|log\s+in)\s+(or\s+)?(sign\s+in|log\s+in)?\s*$'
-    ,r'(?i)^\s*sign\s+in\s+to\s+see\s+.*'
-    ,r'(?i)^\s*log\s+in\s+to\s+see\s+.*'
-    # ── Rodapé institucional / jurídico (EN) ──
-    ,r'(?i)^\s*privacy\s+policy\s*$'
-    ,r'(?i)^\s*terms\s+(of\s+)?(use|service|conditions)\s*$'
-    ,r'(?i)^\s*cookie\s+policy\s*$'
-    ,r'(?i)^\s*accessibility\s*$'
-    ,r'(?i)^\s*user\s+agreement\s*$'
-    ,r'(?i)^\s*about\s+linkedin\s*$'
-    ,r'(?i)^\s*linkedin\s+corporation\s+©'
-    ,r'(?i)^\s*©\s+\d{4}\s+.*\s+all\s+rights\s+reserved\s*$'
-    # ── Rodapé institucional / jurídico (PT) ──
-    ,r'(?i)^\s*poli[t]ica\s+de\s+privacidade\s*$'
-    ,r'(?i)^\s*termos\s+(de\s+)?(uso|serviço|condições)\s*$'
-    ,r'(?i)^\s*poli[t]ica\s+de\s+cookies?\s*$'
-    ,r'(?i)^\s*acessibilidade\s*$'
-    ,r'(?i)^\s*contrato\s+de\s+usu[áa]rio\s*$'
-    ,r'(?i)^\s*sobre\s+o\s+linkedin\s*$'
-    ,r'(?i)^\s*todos\+os\+direitos\+reservados\s*$'
-    # ── Plataformas BR (Gupy, InfoJobs, Catho, etc.) ──
-    ,r'(?i)^\s*ver\s+outras?\s+vagas?\s+da\s+.*\s*$'
-    ,r'(?i)^\s*candidatar\s*-\s+se\s*$'
-    ,r'(?i)^\s*enviar\s+candidatura\s*$'
-    ,r'(?i)^\s*vagas?\s+em\s+destaque\s*$'
-    ,r'(?i)^\s*vagas?\s+recentes?\s*$'
+# ════════════════════════════════════════════════════════════════════
+# SELETORES CSS POR PLATAFORMA (fallback BeautifulSoup)
+# ════════════════════════════════════════════════════════════════════
+
+_SELECTORS_JOB_BODY: list[tuple[str, str]] = [
+    ('.description__text', 'LinkedIn'),
+    ('.show-more-less-html__markup', 'LinkedIn'),
+    ('.jobs-description__content', 'LinkedIn'),
+    ('#job-details', 'LinkedIn'),
+    ('.jobDescriptionContainer', 'Glassdoor'),
+    ('#jobDescriptionText', 'Indeed'),
+    ('.jobsearch-JobComponent-description', 'Indeed'),
+    ('.job-description', 'Gupy'),
+    ('.vacancy__description', 'Gupy'),
+    ('.offer-body', 'Catho'),
+    ('.detail-body', 'InfoJobs'),
+    ('.description-job', 'Vagas'),
+    ('[data-qa="job-description"]', 'Genérico'),
 ]
 
-# ── Linhas curtas de navegação / ruído (PT + EN) ─────────────────────
-_NAV_NOISE: set[str] = {
-    # EN
-    'apply', 'save', 'share', 'send', 'report', 'promote',
-    'like', 'comment', 'repost', 'follow', 'message',
-    '123', 'see more', 'show more', 'show all',
-    'sign in', 'log in', 'join', 'register',
-    'skip to content', 'skip to main content',
-    'back to top', 'scroll to top',
-    # PT
-    'candidatar-se', 'candidatar', 'salvar', 'compartilhar',
-    'enviar', 'denunciar', 'curtir', 'comentar', 'seguir',
-    'mensagem', 'ver mais', 'mostrar mais', 'mostrar tudo',
-    'entrar', 'cadastre-se', 'pular para o conteúdo',
-    'voltar ao topo', 'ir para o topo',
-}
+_SELECTORS_TITLE: list[tuple[str, str]] = [
+    ('h1.top-card-layout__title', 'LinkedIn'),
+    ('.job-details-jobs-unified-top-card__job-title', 'LinkedIn'),
+    ('.jobTitle', 'Glassdoor'),
+    ('h1.jobsearch-JobInfoHeader-title', 'Indeed'),
+    ('.job-title', 'Gupy'),
+    ('.offer-title', 'Catho'),
+    ('h1', 'Genérico'),
+]
+
+_NOISE_CLASSES: list[str] = [
+    '.similar-jobs', '.recommendations', '.related-searches',
+    '.similar-jobs-container', '.job-search-recommendations',
+    '.jobs-easy-apply-modal', '.application-outcome',
+    '.aside', '.sidebar', '.sign-up-modal',
+    '.jobs-similar-jobs', '.jobs-search-results',
+    '.job-card-container', '.job-recommendations',
+    '.other-jobs', '.related-jobs', '.jobs-section-similar',
+    '.gupy-similar-jobs', '.similar-vacancies',
+    '.footer-container', '.site-footer', '.header-nav',
+    '.nav-bar', '.top-nav', '.breadcrumb', '.social-share',
+    '.apply-button-container', '.cookie-banner',
+]
+
+_NOISE_TAGS: list[str] = [
+    'script', 'style', 'nav', 'header', 'footer',
+    'aside', 'iframe', 'noscript', 'button', 'svg', 'form',
+    'dialog', 'modal',
+]
 
 
-def strip_noise(text: str) -> str:
-    """Pré-processamento de texto da vaga: corta ruído de scraping.
+# ════════════════════════════════════════════════════════════════════
+# PATRÕES E REGEX DE HEADERS DE SEÇÃO
+# ════════════════════════════════════════════════════════════════════
 
-    Compatível com LinkedIn, Gupy, Glassdoor, Catho, InfoJobs,
-    Indeed, Vagas.com e qualquer portal de emprego em PT ou EN.
+SECTION_PATTERNS: list[tuple[str, str]] = [
+    (
+        r'^(responsabilidades?( e atribui[cç][oõ]es?)?|atividades|atribui[cç][oõ]es|o que voc[eê] (vai|ir[aá]|far[aá]) (fazer|atuar)|suas atividades|fun[cç][oõ]es|papel|suas responsabilidades|responsibilities|what you will do|duties|role overview|the role)$',
+        'Responsabilidades e Atribuições'
+    ),
+    (
+        r'^(requisitos?( e qualifica[cç][oõ]es?)?|qualifica[cç][oõ]es|o que (buscamos|esperamos)( em voc[eê])?|o que voc[eê] precisa (ter|possuir)|perfil (desejado|buscado)|conhecimentos (necess[aá]rios|obrigat[oó]rios)|pr[eé]-requisitos|experi[eê]ncia necess[aá]ria|habilidades necess[aá]rias|requirements|qualifications|what we look for|what you need|must have|basic qualifications|skills required)$',
+        'Requisitos e Qualificações'
+    ),
+    (
+        r'^(diferenciais?( se tiver)?|diferencial|conhecimentos desej[aá]veis|desej[aá]vel|desej[aá]veis|nice to have|nice-to-have|plus|preferred qualifications|bonus skills)$',
+        'Diferenciais'
+    ),
+    (
+        r'^(benef[ií]cios|nossos benef[ií]cios|o que oferecemos|pacote de benef[ií]cios|remunera[cç][aã]o e benef[ií]cios|benef[ií]cios e vantagens|benefits|what we offer|perks|compensation)$',
+        'Benefícios'
+    ),
+    (
+        r'^(sobre a( nossa)? empresa|quem somos|sobre n[oó]s|nossa hist[oó]ria|nossa empresa|conhe[cç]a a empresa|about us|about the company|who we are|our culture)$',
+        'Sobre a Empresa'
+    ),
+    (
+        r'^(sobre a vaga|sobre a posi[cç][aã]o|resumo da vaga|descri[cç][aã]o da vaga|about the role|job summary|job description|position overview)$',
+        'Sobre a Vaga'
+    ),
+]
 
-    1. Corta texto a partir de marcadores de rodapé / vagas similares.
-    2. Remove linhas curtas de navegação ("Apply", "Candidatar-se").
-    3. Remove URLs soltas, emojis e linhas duplicadas.
-    """
-    if not text:
-        return ""
 
-    # Normaliza quebras de linha
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
+# ════════════════════════════════════════════════════════════════════
+# MARCADORES DE CORTE DE CAUDA
+# ════════════════════════════════════════════════════════════════════
 
-    # ── CORTE 1: Marcadores de rodapé / vagas similares ────────────────
+_CUT_MARKERS: list[str] = [
+    # PT — Sidebar/metadata
+    'nível de experiência', 'tipo de emprego',
+    'função logística', 'setores ',
+    # PT — Vagas similares / ruído
+    'vagas semelhantes', 'vagas similares', 'vagas relacionadas',
+    'as pessoas também visualizaram', 'pesquisas semelhantes',
+    'pesquisas relacionadas',
+    'indicações dobram suas chances',
+    'as indicações dobram suas chances',
+    'conteúdos mais populares',
+    'quem viu esta vaga', 'quem você também viu',
+    'vagas recomendadas',
+    'seja o primeiro a candidatar',
+    'veja quem você conhece',
+    'vagas em destaque', 'vagas recentes',
+    'ver outras vagas da', 'outras vagas',
+    'outras vagas na mesma empresa',
+    'outras oportunidades',
+    'receba alertas de novas vagas',
+    'explorar mais conteúdo',
+    'cadastre seu currículo',
+    'conheça outras vagas',
+    'confira outras vagas',
+    'vagas abertas na empresa',
+    'mais vagas',
+    # EN — Sidebar/metadata
+    'experience level', 'employment type',
+    'job function', 'industries',
+    # EN — Similar jobs / noise
+    'similar jobs', 'similar job searches',
+    'people also viewed', 'you might also like',
+    'recommended for you', 'jobs you might be interested in',
+    'be the first to apply', 'see who you know at',
+    'related searches',
+    'explore top content', 'explore your career options',
+    'more jobs at', 'other jobs at',
+    'similar opportunities',
+]
+
+
+# ════════════════════════════════════════════════════════════════════
+# FUNÇÕES DE EXTRAÇÃO (ETAPA 1)
+# ════════════════════════════════════════════════════════════════════
+
+def _fetch_html(url: str) -> str:
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/125.0.0.0 Safari/537.36'
+        ),
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
+    resp = requests.get(url, headers=headers, timeout=20)
+    resp.raise_for_status()
+    return resp.text
+
+
+def _convert_html_structure_to_markdown(soup: BeautifulSoup) -> None:
+    """Converte H1-H6, DT e tags de destaque isoladas em cabeçalhos Markdown."""
+    for h_tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'dt']):
+        text = h_tag.get_text(strip=True)
+        if text:
+            h_tag.replace_with(f"\n\n## {text}\n\n")
+
+    for p_tag in soup.find_all(['p', 'div']):
+        children = [c for c in p_tag.children if isinstance(c, Tag)]
+        if len(children) == 1 and children[0].name in ('strong', 'b'):
+            text = p_tag.get_text(strip=True)
+            if text and len(text) <= 80 and not text.endswith('.'):
+                clean_text = text.rstrip(':').strip()
+                p_tag.replace_with(f"\n\n## {clean_text}\n\n")
+
+
+def _extract_from_soup(soup: BeautifulSoup) -> tuple[str, str]:
+    titulo = ''
+    for seletor, _ in _SELECTORS_TITLE:
+        el = soup.select_one(seletor)
+        if el:
+            texto = el.get_text(strip=True)
+            if texto and len(texto) > 2 and texto.lower() not in ('linkedin', 'jobs'):
+                titulo = texto
+                break
+
+    for noise_class in _NOISE_CLASSES:
+        for tag in soup.select(noise_class):
+            tag.decompose()
+
+    for tag_name in _NOISE_TAGS:
+        for tag in soup.find_all(tag_name):
+            tag.decompose()
+
+    body_html = ''
+    for seletor, _ in _SELECTORS_JOB_BODY:
+        el = soup.select_one(seletor)
+        if el:
+            body_html = str(el)
+            break
+
+    if not body_html:
+        for tag_name in ('main', 'article'):
+            container = soup.find(tag_name)
+            if container and isinstance(container, Tag):
+                body_html = str(container)
+                break
+
+    return titulo, body_html
+
+
+def _bs4_fallback(html: str) -> str:
+    """Fallback: BeautifulSoup com seletores CSS e marcação Markdown."""
+    soup = BeautifulSoup(html, 'html.parser')
+    titulo, body_html = _extract_from_soup(soup)
+    if not body_html:
+        return ''
+
+    soup2 = BeautifulSoup(body_html, 'html.parser')
+    _convert_html_structure_to_markdown(soup2)
+
+    for tag_name in _NOISE_TAGS:
+        for tag in soup2.find_all(tag_name):
+            tag.decompose()
+
+    raw = soup2.get_text(separator='\n', strip=True)
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    titulo_final = titulo or 'Título não identificado'
+    return f'## VAGA: {titulo_final}\n\n' + '\n'.join(lines)
+
+
+def _extract_raw(html: str) -> tuple[str, str]:
+    """Extrai texto bruto em Markdown do HTML. Retorna (texto, método)."""
+    # 1. trafilatura em formato markdown
+    if HAS_TRAFILATURA:
+        try:
+            text = trafilatura.extract(
+                html,
+                output_format='markdown',
+                favor_precision=False,
+                include_comments=False,
+                include_tables=True,
+                no_fallback=False,
+            ) or ''
+            if len(text) >= 200:
+                return text, 'trafilatura'
+        except Exception as e:
+            print(f'[Scraper] trafilatura falhou: {e}')
+
+    # 2. readability-lxml
+    if HAS_READABILITY:
+        try:
+            doc = ReadabilityDocument(html)
+            content_html = doc.summary()
+            soup = BeautifulSoup(content_html, 'html.parser')
+            _convert_html_structure_to_markdown(soup)
+            text = soup.get_text(separator='\n', strip=True)
+            text = '\n'.join(ln.strip() for ln in text.splitlines() if ln.strip())
+            if text and len(text) >= 200:
+                return text, 'readability-lxml'
+        except Exception as e:
+            print(f'[Scraper] readability falhou: {e}')
+
+    # 3. BeautifulSoup
+    text = _bs4_fallback(html)
+    if text and len(text) >= 200:
+        return text, 'beautifulsoup'
+
+    return '', 'nenhum'
+
+
+# ════════════════════════════════════════════════════════════════════
+# FUNÇÕES DE LIMPEZA (ETAPAS 2-6)
+# ════════════════════════════════════════════════════════════════════
+
+def _clean_whitespace(text: str) -> str:
+    """ETAPA 2: Remove whitespace em excesso."""
     lines = text.split('\n')
-    clean_lines = []
+    lines = [ln.strip() for ln in lines]
+    result = []
+    prev_empty = False
+    for ln in lines:
+        if not ln:
+            if not prev_empty:
+                result.append('')
+            prev_empty = True
+        else:
+            result.append(ln)
+            prev_empty = False
+    return '\n'.join(result)
+
+
+def _dedup_lines(text: str) -> str:
+    """ETAPA 3: Remove blocos de conteúdo duplicado."""
+    lines = text.split('\n')
+
+    # Remove conteúdo duplicado consecutivo ou blocos idênticos
+    result = []
+    prev_norm = None
+    removed = 0
     for line in lines:
-        if any(re.match(p, line) for p in _CUT_PATTERNS):
-            break  # Corta tudo a partir daqui
-        clean_lines.append(line)
-    text = '\n'.join(clean_lines)
-
-    # ── CORTE 2: Linhas curtas de navegação / ruído ────────────────────
-    result_lines = []
-    for line in clean_lines:
-        stripped = line.strip().lower()
-        if stripped in _NAV_NOISE:
+        norm = _normalize_line(line)
+        if norm and norm == prev_norm:
+            removed += 1
             continue
-        if re.match(r'^https?://\S+$', line.strip()):
+        result.append(line)
+        prev_norm = norm
+
+    if removed:
+        print(f'[Scraper] Linhas duplicadas removidas: {removed}')
+    return '\n'.join(result)
+
+
+def _cut_tail(text: str) -> str:
+    """ETAPA 4: Corta texto a partir do marcador de ruído mais cedo."""
+    lines = text.split('\n')
+    best_idx = len(lines)
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        for marker in _CUT_MARKERS:
+            if marker in line_lower:
+                if i < best_idx:
+                    best_idx = i
+                break
+    if best_idx < len(lines):
+        return '\n'.join(lines[:best_idx]).rstrip()
+    return text
+
+
+def _normalize_headers(text: str) -> tuple[str, list[str]]:
+    """ETAPA 5: Padroniza headers em formato '## Header'."""
+    lines = text.split('\n')
+    result = []
+    found = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append('')
             continue
-        if re.match(r'^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2300-\u23FF\uFE00-\uFE0F\u200D]+$', line.strip()):
+
+        # Pula listas de itens numerados ou bullet points
+        if re.match(r'^[-*•–—]\s', stripped) or re.match(r'^\d+[\.\)]\s', stripped):
+            result.append(line)
             continue
-        result_lines.append(line)
-    text = '\n'.join(result_lines)
 
-    # ── CORTE 3: Remove linhas duplicadas consecutivas ─────────────────
-    text = re.sub(r'(\n[^\n]+)\n\1', r'\1', text)
+        # Limpa formatação markdown prévia
+        clean = re.sub(r'^[#_\s]+', '', stripped)
+        clean = re.sub(r'^\*\*([^*]+?)\*\*\s*$', r'\1', clean)
+        clean = re.sub(r'^\*([^*]+?)\*\s*$', r'\1', clean)
+        clean = re.sub(r'^__([^_]+?)__\s*$', r'\1', clean)
+        clean = clean.strip()
 
-    # ── CORTE 4: Remove espaços em branco no final de cada linha ──────
-    text = re.sub(r' +\n', '\n', text)
+        no_colon = clean.rstrip(':').strip()
+        normalized = _strip_accents(no_colon).lower()
 
-    # ── CORTE 5: Colapsa 3+ quebras de linha em 2 ────────────────────
+        matched = False
+        # 1. Tenta padronizar por categorias conhecidas
+        for pattern, canon_title in SECTION_PATTERNS:
+            if re.match(pattern, normalized, re.IGNORECASE):
+                result.append(f'## {canon_title}')
+                found.append(canon_title)
+                matched = True
+                break
+
+        if matched:
+            continue
+
+        # 2. Se já era um header Markdown (começava com # ou ##)
+        if stripped.startswith('#') and len(no_colon) <= 80:
+            header_text = no_colon.title()
+            result.append(f'## {header_text}')
+            found.append(header_text)
+            continue
+
+        # 3. Heurística para linhas curtas terminadas em ':'
+        if stripped.endswith(':') and len(no_colon) <= 60 and len(no_colon.split()) <= 7:
+            if not re.search(r'\b(como|quando|onde|porque|para|com|em|que)\b', normalized):
+                header_text = no_colon.title()
+                result.append(f'## {header_text}')
+                found.append(header_text)
+                continue
+
+        result.append(line)
+
+    return '\n'.join(result), found
+
+
+def _clean_artifacts(text: str) -> str:
+    """ETAPA 6: Limpa artefatos de sidebar e whitespace final."""
+    lines = text.split('\n')
+    clean = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        # Bullet isolado → funde com próxima linha ou remove
+        if re.match(r'^[-*–—•]\s*$', stripped):
+            if i + 1 < len(lines):
+                nxt = lines[i + 1].strip()
+                if (nxt
+                        and not re.match(r'^[-*–—•]\s*$', nxt)
+                        and not nxt.startswith('## ')
+                        and nxt not in ('', '\n')):
+                    merged = re.sub(r'\s{2,}', ' ', nxt)
+                    clean.append(f'- {merged}')
+                    i += 2
+                    continue
+            i += 1
+            continue
+        # Indentação excessiva em não-listas
+        if len(lines[i]) - len(lines[i].lstrip()) > 2 and not stripped.startswith(('-', '*', '•')):
+            clean.append(stripped)
+        else:
+            clean.append(lines[i])
+        i += 1
+    text = '\n'.join(clean)
+    text = re.sub(r'\n[ \t]+\n', '\n\n', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+# ════════════════════════════════════════════════════════════════════
+# PIPELINE PRINCIPAL
+# ════════════════════════════════════════════════════════════════════
+
+def clean_job_text_content(raw_input: str) -> str:
+    """Limpa, remove ruídos e padroniza headers de qualquer texto de vaga.
+
+    Funciona tanto para HTML extraído quanto para texto colado manualmente.
+    """
+    if not raw_input or not raw_input.strip():
+        return ''
+
+    text = raw_input
+    # Se contiver tags HTML (ex: colado com tags ou retornado de scrape)
+    if '<html' in text.lower() or '<div' in text.lower() or '<p' in text.lower():
+        text, method = _extract_raw(text)
+        print(f'[Scraper] Extraído do HTML via {method}')
+
+    text = _clean_whitespace(text)
+    text = _dedup_lines(text)
+    text = _cut_tail(text)
+    text, headers = _normalize_headers(text)
+    text = _clean_artifacts(text)
 
     return text.strip()
 
-def read_job_from_file(filepath: str) -> str:
-    """Lê descrição da vaga de um arquivo de texto local."""
-    return Path(filepath).read_text(encoding='utf-8')
+
+def clean_job_text(html: str) -> str:
+    """Alias para clean_job_text_content (compatibilidade de API)."""
+    return clean_job_text_content(html)
 
 
 def scrape_job(url: str) -> str:
-    """Wrapper síncrono para scrape_job_url. Aplica strip_noise no resultado."""
-    raw = scrape_job_url(url)
-    return strip_noise(raw)
+    """Raspa a vaga a partir de uma URL e retorna texto limpo."""
+    try:
+        html = _fetch_html(url)
+    except Exception as e:
+        print(f"[Scraper] Erro ao acessar {url}: {e}")
+        return ''
+    resultado = clean_job_text(html)
+    if not resultado.strip():
+        print('[Scraper] Conteúdo extraído está vazio.')
+    return resultado
+
+
+def read_job_from_file(filepath: str) -> str:
+    """Lê descrição da vaga de um arquivo de texto local."""
+    content = Path(filepath).read_text(encoding='utf-8')
+    return clean_job_text_content(content)
+

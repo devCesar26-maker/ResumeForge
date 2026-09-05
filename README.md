@@ -52,7 +52,6 @@ Para desenvolvimento local:
 * **Geradores:** `python-docx` (Word `.docx` padrão ATS)
 * **Infra:** Docker & docker-compose
 
-
 ## 📄 Licença
 
 Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.

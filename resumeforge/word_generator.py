@@ -6,7 +6,7 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from .config import OUTPUT_DIR
+from .config import OUTPUT_DIR, SECTION_LABELS
 from .models import ResumeData
 
 
@@ -56,12 +56,12 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
 
     # Resumo
     if resume.summary:
-        heading = doc.add_heading("Resumo Profissional", level=1)
+        heading = doc.add_heading(SECTION_LABELS["summary"], level=1)
         doc.add_paragraph(resume.summary)
 
     # Experiência
     if resume.experience:
-        doc.add_heading("Experiência Profissional", level=1)
+        doc.add_heading(SECTION_LABELS["experience"], level=1)
         for exp in resume.experience:
             p = doc.add_paragraph()
             p.add_run(f"{exp.role}").bold = True
@@ -77,7 +77,7 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
 
     # Educação
     if resume.education:
-        doc.add_heading("Educação", level=1)
+        doc.add_heading(SECTION_LABELS["education"], level=1)
         for edu in resume.education:
             p = doc.add_paragraph()
             p.add_run(f"{edu.institution}").bold = True
@@ -91,7 +91,7 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
 
     # Skills
     if resume.skills:
-        doc.add_heading("Habilidades Técnicas", level=1)
+        doc.add_heading(SECTION_LABELS["skills"], level=1)
         for sc in resume.skills:
             p = doc.add_paragraph()
             p.add_run(f"{sc.category}: ").bold = True
@@ -99,7 +99,7 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
 
     # Projetos
     if resume.projects:
-        doc.add_heading("Projetos", level=1)
+        doc.add_heading(SECTION_LABELS["projects"], level=1)
         for proj in resume.projects:
             p = doc.add_paragraph()
             p.add_run(f"{proj.name}").bold = True
@@ -112,13 +112,13 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
 
     # Idiomas
     if resume.languages:
-        doc.add_heading("Idiomas", level=1)
+        doc.add_heading(SECTION_LABELS["languages"], level=1)
         langs = [f"{lang.name}: {lang.level}" for lang in resume.languages]
         doc.add_paragraph(" | ".join(langs))
 
     # Certificações
     if resume.certifications:
-        doc.add_heading("Certificações", level=1)
+        doc.add_heading(SECTION_LABELS["certifications"], level=1)
         for cert in resume.certifications:
             p = doc.add_paragraph()
             p.add_run(f"{cert.name}").bold = True

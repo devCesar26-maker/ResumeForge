@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from resumeforge.config import DATA_DIR, OUTPUT_DIR
 from resumeforge.resume_parser import parse_resume
-from resumeforge.scraper import scrape_job
+from resumeforge.scraper import scrape_job, clean_job_text_content
 from resumeforge.analyzer import parse_job_posting, analyze_match, generate_tailored_resume, generate_cover_letter
 from resumeforge.word_generator import generate_word
 
@@ -53,11 +53,11 @@ def api_analyze():
         return jsonify({'error': 'Nenhum currículo enviado.'}), 400
         
     file = request.files['resume']
-    job_text = request.form.get('job_text', '')
+    raw_job_text = request.form.get('job_text', '')
     
     if file.filename == '':
         return jsonify({'error': 'Arquivo vazio.'}), 400
-    if not job_text:
+    if not raw_job_text:
         return jsonify({'error': 'Texto da vaga não informado.'}), 400
         
     try:
@@ -74,8 +74,9 @@ def api_analyze():
             print(f"[Erro Parse Resume]: {e}")
             return jsonify({'error': f'Falha ao processar o arquivo de currículo: {str(e)}'}), 422
         
-        # 2. Parse Job
+        # 2. Clean & Parse Job
         try:
+            job_text = clean_job_text_content(raw_job_text)
             job = parse_job_posting(job_text)
         except ValidationError as ve:
             print(f"[Erro Validação Job]: {ve}")
