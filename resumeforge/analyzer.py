@@ -360,6 +360,7 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
         raise
 
     try:
+        # TODO-DEBUG: remover após confirmar estabilidade
         # ── LOG DO JSON BRUTO DO GEMINI (auditoria da causa raiz) ──
         print("\n" + "="*60)
         print("[AnalyzeMatch] JSON BRUTO RETORNADO PELO GEMINI (response.text):")
@@ -576,7 +577,6 @@ Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
         print("\n" + "="*50)
         print("ERRO DE VALIDAÇÃO DO PYDANTIC (ResumeData) COM O GEMINI:")
         print(ve.json(indent=2))
-        print(f"Resposta bruta do Gemini: {response.text}")
         print("="*50 + "\n")
         raise ve
     except Exception as e:
@@ -596,6 +596,15 @@ def generate_cover_letter(resume_text: str, job: JobPosting, match: MatchResult)
     client = _get_gemini_client()
     # Sanitiza o texto
     resume_text = _sanitize_text(resume_text)
+
+    # TODO-DEBUG: remover após confirmar estabilidade
+    # ── LOG DE DIAGNÓSTICO: confirma que o match chegou preenchido ──
+    # O prompt da carta depende de match.matching_skills[:5]; se vier vazio,
+    # a carta sai sem conteúdo relevante.
+    print(f"\n[GenerateCoverLetter] match=None? {match is None} | "
+          f"matching_skills={len(match.matching_skills) if match else 'N/A'} "
+          f"({match.matching_skills[:5] if match else 'N/A'}) | "
+          f"job.title={job.title!r}")
 
     prompt = f"""Escreva uma Carta de Apresentação concisa (de no máximo 3 parágrafos curtos) para a vaga especificada.
 
@@ -633,4 +642,22 @@ Gere o texto da carta diretamente, sem cabeçalhos antiquados de endereço, de m
         print(f"\n[Erro Gemini - API (generate_cover_letter)]: {type(e).__name__}: {e}")
         raise
 
-    return response.text
+    # TODO-DEBUG: remover após confirmar estabilidade
+    # ── LOG DE DIAGNÓSTICO (temporário) ──
+    # O SDK retorna response.text = None quando o Gemini responde SEM partes
+    # de texto (resposta vazia/bloqueada). Sem esse log, a causa raiz ficaria
+    # invisível.
+    # OBS: o print do texto BRUTO da carta foi removido por expor dados do
+    # candidato — se precisar reativar para debug, logue apenas o tamanho.
+    response_text = response.text
+    print(f"[GenerateCoverLetter] len(text)={len(response_text) if response_text else 0}")
+    if response.candidates:
+        print(f"[GenerateCoverLetter] finish_reason={response.candidates[0].finish_reason}")
+
+    if not response_text or not response_text.strip():
+        # TODO-DEBUG: remover após confirmar estabilidade (guard vazio/None)
+        print("\n[ERRO GenerateCoverLetter] Gemini retornou texto vazio/None — "
+              "propagando erro explícito em vez de carta em branco")
+        raise ValueError("O Gemini retornou uma carta vazia. Tente novamente.")
+
+    return response_text

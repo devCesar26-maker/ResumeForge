@@ -7,10 +7,12 @@ function appData() {
         jobText: '',
         isScraping: false,
         isAnalyzing: false,
-        isGenerating: false,
+        isGeneratingResume: false,
+        isGeneratingLetter: false,
         matchResult: null,
         sessionData: null,
-        generatedFiles: null,
+        generatedResume: null,
+        generatedLetter: null,
         generationMessage: 'Preparando documentos...',
         generationMessages: [
             'Preparando documentos...',
@@ -18,6 +20,13 @@ function appData() {
             'Reescrevendo experiências para o ATS...',
             'Escrevendo carta de apresentação...',
             'Gerando arquivo Word...',
+            'Quase lá...'
+        ],
+        letterMessages: [
+            'Preparando carta...',
+            'Selecionando seus pontos fortes...',
+            'Escrevendo carta de apresentação...',
+            'Revisando tom e linguagem...',
             'Quase lá...'
         ],
         generationTimer: null,
@@ -73,7 +82,8 @@ function appData() {
             
             this.isAnalyzing = true;
             this.matchResult = null;
-            this.generatedFiles = null;
+            this.generatedResume = null;
+            this.generatedLetter = null;
             
             const formData = new FormData();
             formData.append('resume', this.file);
@@ -163,10 +173,12 @@ function appData() {
             Plotly.newPlot('radarChart', data, layout, config);
         },
 
-        async generateDocs() {
+        async generateResume() {
             if (!this.sessionData) return;
             
-            this.isGenerating = true;
+            this.isGeneratingResume = true;
+            this.generatedResume = null;
+            this.generatedLetter = null;
             
             // Feedback de progresso rotativo: o usuário não acha que travou
             this.generationMessage = this.generationMessages[0];
@@ -181,7 +193,7 @@ function appData() {
             const timeoutId = setTimeout(() => controller.abort(), 150000);
 
             try {
-                const response = await fetch('/api/generate', {
+                const response = await fetch('/api/generate-resume', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.sessionData),
@@ -191,9 +203,9 @@ function appData() {
                 const data = await response.json();
                 
                 if (response.ok) {
-                    this.generatedFiles = data;
+                    this.generatedResume = data;
                 } else {
-                    alert('Erro ao gerar documentos: ' + data.error);
+                    alert('Erro ao gerar currículo: ' + data.error);
                 }
             } catch (error) {
                 if (error.name === 'AbortError') {
@@ -204,7 +216,51 @@ function appData() {
             } finally {
                 clearTimeout(timeoutId);
                 clearInterval(this.generationTimer);
-                this.isGenerating = false;
+                this.isGeneratingResume = false;
+            }
+        },
+
+        async generateLetter() {
+            if (!this.sessionData || !this.generatedResume) return;
+            
+            this.isGeneratingLetter = true;
+            this.generatedLetter = null;
+            
+            this.generationMessage = this.letterMessages[0];
+            let step = 0;
+            this.generationTimer = setInterval(() => {
+                step = (step + 1) % this.letterMessages.length;
+                this.generationMessage = this.letterMessages[step];
+            }, 10000);
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 150000);
+
+            try {
+                const response = await fetch('/api/generate-cover-letter', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.sessionData),
+                    signal: controller.signal
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    this.generatedLetter = data.cover_letter;
+                } else {
+                    alert('Erro ao gerar carta: ' + data.error);
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    alert('A geração demorou demais e foi cancelada. Se for a primeira vez, pode ser o cold start do servidor — tente novamente.');
+                } else {
+                    alert('Erro de conexão: ' + error.message);
+                }
+            } finally {
+                clearTimeout(timeoutId);
+                clearInterval(this.generationTimer);
+                this.isGeneratingLetter = false;
             }
         }
     }

@@ -2,7 +2,6 @@
 
 import gc
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -129,8 +128,18 @@ def api_analyze():
         return jsonify({'error': f'Erro interno no servidor: {str(e)}'}), 500
 
 
-@app.route('/api/generate', methods=['POST'])
-def api_generate():
+def _session_job_match(data: dict, raw_resume: str, resume_data, job_text: str):
+    """Reconstrói job + match a partir da sessão; recalcula se ausentes."""
+    if data.get('job') and data.get('match'):
+        return JobPosting(**data['job']), MatchResult(**data['match'])
+    job = parse_job_posting(job_text)
+    match = analyze_match(raw_resume, job, resume_data)
+    return job, match
+
+
+@app.route('/api/generate-resume', methods=['POST'])
+def api_generate_resume():
+    """Gera apenas o currículo adaptado (.docx)."""
     data = request.json
     resume_path = Path(data.get('resume_path', ''))
     job_text = data.get('job_text', '')
@@ -139,52 +148,64 @@ def api_generate():
         return jsonify({'error': 'Dados da sessão inválidos.'}), 400
         
     try:
-        # Recupera dados
         raw_resume, resume_data = parse_resume(resume_path)
+        job, match = _session_job_match(data, raw_resume, resume_data, job_text)
         
-        # Reutiliza job + match calculados na etapa /api/analyze, evitando
-        # refazer parse da vaga (Groq) e analyze_match (Gemini) — as duas
-        # chamadas mais custosas desta etapa. Fallback: recalcula se ausentes.
-        if data.get('job') and data.get('match'):
-            job = JobPosting(**data['job'])
-            match = MatchResult(**data['match'])
-        else:
-            job = parse_job_posting(job_text)
-            match = analyze_match(raw_resume, job, resume_data)
+        tailored_data = generate_tailored_resume(raw_resume, job, match, resume_data)
         
-        # Gera carta de apresentação e currículo adaptado em PARALELO:
-        # são chamadas independentes ao Gemini (IO-bound), então rodam
-        # em threads sem necessidade de reescrever tudo em async.
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_resume = executor.submit(generate_tailored_resume, raw_resume, job, match, resume_data)
-            future_letter = executor.submit(generate_cover_letter, raw_resume, job, match)
-            tailored_data = future_resume.result()
-            cover_letter = future_letter.result()
-        
-        # Arquivos
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
-        output_name = f"cv_{company_slug}"
+        word_path = generate_word(tailored_data, f"cv_{company_slug}")
         
-        word_path = generate_word(tailored_data, output_name)
-        
-        # Monta a resposta ANTES de liberar a memória
         response = jsonify({
             'success': True,
-            'cover_letter': cover_letter,
             'files': {
                 'word': f'/download/{word_path.name}',
             }
         })
         
-        # Libera objetos pesados da memória
-        del raw_resume, resume_data, job, match, cover_letter, tailored_data
+        del raw_resume, resume_data, job, match, tailored_data
         gc.collect()
-        
         return response
         
     except Exception as e:
-        print(f"\n[Erro Geração de Documentos]: {e}")
+        print(f"\n[Erro Geração de Currículo]: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/generate-cover-letter', methods=['POST'])
+def api_generate_cover_letter():
+    """Gera apenas a carta de apresentação."""
+    data = request.json
+    resume_path = Path(data.get('resume_path', ''))
+    job_text = data.get('job_text', '')
+    
+    if not resume_path.exists() or not job_text:
+        return jsonify({'error': 'Dados da sessão inválidos.'}), 400
+        
+    try:
+        raw_resume, resume_data = parse_resume(resume_path)
+        job, match = _session_job_match(data, raw_resume, resume_data, job_text)
+        
+        cover_letter = generate_cover_letter(raw_resume, job, match)
+        
+        # Rede de segurança: nunca devolver carta em branco sem feedback.
+        # generate_cover_letter já lança erro se o Gemini retornar vazio/None,
+        # mas este guard duplo garante erro explícito mesmo em caso de regressão.
+        if not cover_letter or not cover_letter.strip():
+            # TODO-DEBUG: remover após confirmar estabilidade (guard vazio/None)
+            print("\n[ERRO Carta] generate_cover_letter retornou texto vazio — retornando erro explícito")
+            return jsonify({'error': 'Falha ao gerar a carta de apresentação, tente novamente.'}), 502
+        
+        response = jsonify({'success': True, 'cover_letter': cover_letter})
+        
+        del raw_resume, resume_data, job, match, cover_letter
+        gc.collect()
+        return response
+        
+    except Exception as e:
+        print(f"\n[Erro Geração de Carta]: {e}")
+        # Mensagem amigável pro usuário; o erro real fica no log do servidor
+        return jsonify({'error': 'Falha ao gerar a carta de apresentação, tente novamente.'}), 502
 
 
 @app.route('/healthz')
