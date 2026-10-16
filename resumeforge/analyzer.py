@@ -188,7 +188,8 @@ def _extrair_termos_de_skill(itens_raw: list[str]) -> tuple[list[str], list[str]
 
 # Limite de payload enviado às APIs: acima disso o custo de tokens
 # (input + latência de processamento) explode sem ganho de qualidade.
-_MAX_INPUT_CHARS = 16000
+# 6000 chars (~1500 tokens) é suficiente para um currículo/vaga completos.
+_MAX_INPUT_CHARS = 6000
 
 
 def _truncate(text: str, limit: int = _MAX_INPUT_CHARS) -> str:
@@ -226,9 +227,9 @@ def _gemini_config(**kwargs) -> types.GenerateContentConfig:
 # ==========================================
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    # TypeError/ValueErro são erros de código/dados: não se resolvem com retry
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=1, max=3),
+    # TypeError/ValueError são erros de código/dados: não se resolvem com retry
     # e o wrapper RetryError mascarava a exceção real no log.
     retry=retry_if_not_exception_type((TypeError, ValueError))
 )
@@ -327,8 +328,8 @@ Texto da vaga:
 # ==========================================
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=1, max=3),
     retry=retry_if_exception_type(ServerError)
 )
 def analyze_match(resume_text: str, job: JobPosting, resume_data: ResumeData | None = None) -> MatchResult:
@@ -537,8 +538,8 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
 # ==========================================
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=1, max=3),
     retry=retry_if_exception_type(ServerError)
 )
 def generate_tailored_resume(
@@ -636,8 +637,8 @@ Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
 
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=1, max=3),
     retry=retry_if_exception_type(ServerError)
 )
 def generate_cover_letter(resume_text: str, job: JobPosting, match: MatchResult) -> str:
