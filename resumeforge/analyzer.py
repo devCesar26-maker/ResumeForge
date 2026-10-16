@@ -186,6 +186,18 @@ def _extrair_termos_de_skill(itens_raw: list[str]) -> tuple[list[str], list[str]
 # INICIALIZAÇÃO DOS CLIENTES
 # ==========================================
 
+# Limite de payload enviado às APIs: acima disso o custo de tokens
+# (input + latência de processamento) explode sem ganho de qualidade.
+_MAX_INPUT_CHARS = 16000
+
+
+def _truncate(text: str, limit: int = _MAX_INPUT_CHARS) -> str:
+    """Corta o texto mantendo o início (dados essenciais ficam no topo)."""
+    if text and len(text) > limit:
+        return text[:limit] + "\n\n[... texto truncado por limite de tamanho ...]"
+    return text
+
+
 def _get_gemini_client() -> genai.Client:
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY não configurada no .env")
@@ -196,6 +208,16 @@ def _get_groq_client() -> Groq:
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY não configurada no .env")
     return Groq(api_key=GROQ_API_KEY)
+
+
+def _gemini_config(**kwargs) -> types.GenerateContentConfig:
+    """Config padrão: desativa o 'thinking' dos modelos Gemini 2.5/3.x.
+
+    O raciocínio interno é o maior componente de latência na análise e,
+    para verificaçãs determinísticas via JSON schema, não agrega qualidade.
+    """
+    kwargs.setdefault('thinking_config', types.ThinkingConfig(thinking_budget=0))
+    return types.GenerateContentConfig(**kwargs)
 
 
 # ==========================================
@@ -211,10 +233,9 @@ def parse_job_posting(raw_text: str) -> JobPosting:
     client = _get_groq_client()
     
     # Aplica pipeline de limpeza e normalização de headers
-    raw_text = clean_job_text_content(raw_text)
-    raw_text = _sanitize_text(raw_text)
+    raw_text = _truncate(_sanitize_text(raw_text))
     
-    schema = JobPosting.model_json_schema()
+    schema = JobPosting.model_json_schema(exclude={'raw_text'})
     
     prompt = f"""Você é um especialista em recrutamento e análise técnica de vagas.
 Extraia as informações estruturadas da vaga de emprego abaixo.
@@ -287,9 +308,9 @@ def analyze_match(resume_text: str, job: JobPosting, resume_data: ResumeData | N
     client = _get_gemini_client()
     
     # Sanitiza o texto antes de enviar à API
-    resume_section = _sanitize_text(resume_text)
+    resume_section = _truncate(_sanitize_text(resume_text))
     if resume_data:
-        resume_section = _sanitize_text(resume_data.model_dump_json())
+        resume_section = _truncate(_sanitize_text(resume_data.model_dump_json()))
 
     prompt = f"""Você é um sistema ATS (Applicant Tracking System) corporativo de alta precisão, frio, analítico e rigoroso.
 Sua única diretriz é avaliar se o candidato possui as qualificações técnicas necessárias de forma literal.
@@ -339,7 +360,7 @@ Responsabilidades: {', '.join(job.responsibilities[:10])}
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(
+            config=_gemini_config(
                 response_mime_type='application/json',
                 response_schema=gemini_schema,
                 temperature=0.2,  # Subimos levemente para dar mais estabilidade na geração
@@ -502,9 +523,9 @@ def generate_tailored_resume(
     client = _get_gemini_client()
 
     # Sanitiza o texto antes de enviar à API
-    resume_section = _sanitize_text(resume_text)
+    resume_section = _truncate(_sanitize_text(resume_text))
     if resume_data:
-        resume_section = _sanitize_text(resume_data.model_dump_json())
+        resume_section = _truncate(_sanitize_text(resume_data.model_dump_json()))
 
     prompt = f"""Você é um engenheiro de recrutamento e especialista em otimização de currículos para sistemas ATS.
 Sua missão é adaptar o currículo do candidato para maximizar o score de compatibilidade com a vaga abaixo, garantindo aprovação na triagem automatizada.
@@ -550,7 +571,7 @@ Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(
+            config=_gemini_config(
                 response_mime_type='application/json',
                 response_schema=resume_data_schema,
                 temperature=0.3,
@@ -624,7 +645,7 @@ Gere o texto da carta diretamente, sem cabeçalhos antiquados de endereço, de m
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(
+            config=_gemini_config(
                 temperature=0.5,
             )
         )

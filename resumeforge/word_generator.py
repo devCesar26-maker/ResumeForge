@@ -1,6 +1,5 @@
 """Gerador de currículo Word (.docx) a partir de dados estruturados."""
 
-import gc
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Inches
@@ -127,11 +126,8 @@ def generate_word(resume: ResumeData, output_name: str = "resume_tailored") -> P
             if cert.date:
                 p.add_run(f" ({cert.date})")
 
-    # Salva e libera memória
     output_path = OUTPUT_DIR / f"{output_name}.docx"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
-    del doc
-    gc.collect()
     
     return output_path

@@ -8,7 +8,6 @@ Pipeline:
   5. Normalização de headers (Heurística & Regex: ## Responsabilidades, ## Requisitos, etc.)
   6. Limpeza de artefatos (bullets isolados, indentação sidebar)
 """
-import os
 import re
 import unicodedata
 import requests
@@ -270,7 +269,7 @@ def _extract_raw(html: str) -> tuple[str, str]:
                 favor_precision=False,
                 include_comments=False,
                 include_tables=True,
-                no_fallback=False,
+                no_fallback=True,
             ) or ''
             if len(text) >= 200:
                 return text, 'trafilatura'

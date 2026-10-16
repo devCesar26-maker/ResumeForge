@@ -1,4 +1,3 @@
-import gc
 import yaml
 from pathlib import Path
 from .models import ResumeData
@@ -50,9 +49,6 @@ def _parse_pdf(filepath: Path) -> str:
         text = page.extract_text()
         if text:
             text_parts.append(text)
-    # Libera o reader da memória
-    del reader
-    gc.collect()
     return '\n'.join(text_parts)
 
 
@@ -63,8 +59,4 @@ def _parse_docx(filepath: Path) -> str:
         raise ImportError('Instale python-docx para ler DOCX: pip install python-docx')
 
     doc = Document(str(filepath))
-    text = '\n'.join(p.text for p in doc.paragraphs if p.text.strip())
-    # Libera o documento da memória
-    del doc
-    gc.collect()
-    return text
+    return '\n'.join(p.text for p in doc.paragraphs if p.text.strip())

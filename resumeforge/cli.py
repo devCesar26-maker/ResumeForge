@@ -11,7 +11,7 @@ from rich.table import Table
 from .config import DEFAULT_RESUME_PATH, DATA_DIR, OUTPUT_DIR
 from .models import ResumeData, MatchResult, JobPosting
 from .resume_parser import parse_resume
-from .scraper import scrape_job, read_job_from_file
+from .scraper import scrape_job, read_job_from_file, clean_job_text_content
 from .analyzer import parse_job_posting, analyze_match, generate_tailored_resume
 from .word_generator import generate_word
 
@@ -50,7 +50,7 @@ def _get_job_text(url: str, paste: bool) -> str:
                 lines.append(line)
         except EOFError:
             pass
-        return '\n'.join(lines)
+        return clean_job_text_content('\n'.join(lines))
     elif url:
         if os.path.exists(url):
             return read_job_from_file(url)

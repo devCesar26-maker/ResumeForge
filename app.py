@@ -1,6 +1,5 @@
 """Backend da Aplicação Web ResumeForge (Flask)."""
 
-import gc
 import time
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
@@ -96,7 +95,7 @@ def api_analyze():
             print(f"[Erro Analyze Match]: {e}")
             return jsonify({'error': f'Falha na análise de compatibilidade (Gemini): {str(e)}'}), 502
         
-        # Monta a resposta ANTES de liberar a memória
+        # Monta a resposta
         response = jsonify({
             'success': True,
             'job': {
@@ -113,10 +112,6 @@ def api_analyze():
                 'match': match.model_dump(exclude={'tailored_resume'}),
             }
         })
-        
-        # Libera objetos pesados da memória
-        del raw_resume, resume_data, job, match
-        gc.collect()
         
         return response
         
@@ -163,8 +158,6 @@ def api_generate_resume():
             }
         })
         
-        del raw_resume, resume_data, job, match, tailored_data
-        gc.collect()
         return response
         
     except Exception as e:
@@ -198,8 +191,6 @@ def api_generate_cover_letter():
         
         response = jsonify({'success': True, 'cover_letter': cover_letter})
         
-        del raw_resume, resume_data, job, match, cover_letter
-        gc.collect()
         return response
         
     except Exception as e:
