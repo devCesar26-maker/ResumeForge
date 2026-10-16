@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type
 
 from .config import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL, SECTION_LABELS
 from .models import JobPosting, MatchResult, ResumeData
@@ -226,16 +226,40 @@ def _gemini_config(**kwargs) -> types.GenerateContentConfig:
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10)
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    # TypeError/ValueErro são erros de código/dados: não se resolvem com retry
+    # e o wrapper RetryError mascarava a exceção real no log.
+    retry=retry_if_not_exception_type((TypeError, ValueError))
 )
 def parse_job_posting(raw_text: str) -> JobPosting:
     """Usa a Groq para extrair dados da vaga em milissegundos."""
     client = _get_groq_client()
     
+    # Garante entrada estritamente como str: o payload da requisição pode
+    # trazer None (campo ausente) ou objeto invalido, e isso escalava como
+    # TypeError dentro do RetryError.
+    if raw_text is None:
+        raise ValueError("Texto da vaga não foi informado (recebido None).")
+    if not isinstance(raw_text, str):
+        raw_text = str(raw_text)
+
     # Aplica pipeline de limpeza e normalização de headers
     raw_text = _truncate(_sanitize_text(raw_text))
+    if not raw_text.strip():
+        raise ValueError("Texto da vaga está vazio após a limpeza.")
     
-    schema = JobPosting.model_json_schema(exclude={'raw_text'})
+    # Instancia com raw_text vazio para o schema não ter o campo gigante;
+    # o texto real vai como contexto no prompt, e é gravado de volta no job
+    # após a resposta. Args extras na versão da SDK do Pydantic não são
+    # aceitos por model_json_schema() (TypeError mascarado pelo RetryError).
+    schema = JobPosting.model_json_schema()
+    # Args extras não são aceitos por model_json_schema() nesta versão do
+    # Pydantic (TypeError mascarado pelo RetryError), então removemos
+    # raw_text do dict manualmente — o texto real vai como contexto no
+    # prompt e é gravado de volta no job após a resposta.
+    schema.get('properties', {}).pop('raw_text', None)
+    if isinstance(schema.get('required'), list):
+        schema['required'] = [f for f in schema['required'] if f != 'raw_text']
     
     prompt = f"""Você é um especialista em recrutamento e análise técnica de vagas.
 Extraia as informações estruturadas da vaga de emprego abaixo.
@@ -274,6 +298,9 @@ Texto da vaga:
     )
 
     response_text = chat_completion.choices[0].message.content
+    if not response_text or not str(response_text).strip():
+        raise ValueError("A Groq retornou conteúdo vazio para a vaga informada.")
+    response_text = str(response_text)  # nunca None/não-str para json.loads
 
     try:
         dados_json = json.loads(response_text)
@@ -565,17 +592,17 @@ Keywords do ATS: {', '.join(job.keywords)}
 
 Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
 
-    resume_data_schema = ResumeData.model_json_schema()
-
+    # Formato exato da SDK para Structured Outputs: response_schema recebe
+    # o modelo Pydantic diretamente (não o dict bruto de model_json_schema).
     try:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
             config=_gemini_config(
-                response_mime_type='application/json',
-                response_schema=resume_data_schema,
+                response_mime_type="application/json",
+                response_schema=ResumeData,
                 temperature=0.3,
-            )
+            ),
         )
     except ClientError as e:
         print(f"\n[Erro Gemini - Requisição Inválida (generate_tailored_resume)]: {e}")
