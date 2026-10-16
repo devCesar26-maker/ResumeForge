@@ -556,6 +556,21 @@ def generate_tailored_resume(
     if resume_data:
         resume_section = _truncate(_sanitize_text(resume_data.model_dump_json()))
 
+    # Projetos costumam aparecer no fim de currículos longos. Preserve uma
+    # amostra do fim junto ao início quando o limite de contexto for atingido.
+    if len(resume_section) >= _MAX_INPUT_CHARS:
+        sanitized_resume = _sanitize_text(
+            resume_data.model_dump_json() if resume_data else resume_text
+        )
+        available = _MAX_INPUT_CHARS - 80
+        head_size = int(available * 0.65)
+        tail_size = available - head_size
+        resume_section = (
+            sanitized_resume[:head_size]
+            + "\n\n[... trecho central omitido por limite de tamanho ...]\n\n"
+            + sanitized_resume[-tail_size:]
+        )
+
     prompt = f"""Você é um engenheiro de recrutamento e especialista em otimização de currículos para sistemas ATS.
 Sua missão é adaptar o currículo do candidato para maximizar o score de compatibilidade com a vaga abaixo, garantindo aprovação na triagem automatizada.
 
@@ -570,7 +585,8 @@ REGRAS DE OURO PARA BATER O ATS:
 3. ORDENAÇÃO DE RELEVÂNCIA: Reorganize as categorias de habilidades (skills) e a ordem dos itens de experiência para que as competências e projetos mais alinhados com a vaga atual fiquem visíveis logo no topo.
 4. INTEGRIDADE ABSOLUTA DE DADOS: Não altere nenhuma data, nome de empresa ou cargo ocupado. Nunca invente experiências fictícias.
 5. SÍNTESE DO RESUMO: Adapte o 'summary' (resumo profissional) do currículo para ser um gancho perfeito de no máximo 4 linhas, contendo as principais tecnologias e anos de experiência exigidos pela vaga.
-6. PRESERVAÇÃO EXATA DE NOMES DE SEÇÃO: NÃO altere, traduza ou normalize os títulos das seções do currículo. Use EXATAMENTE os nomes listados abaixo como títulos de cada seção no JSON gerado (campo `category` para skills, e os campos de estrutura do ResumeData para as demais seções). Se o currículo original usa "Formação Acadêmica", NÃO gire "Educação" — preserve o termo original.
+6. PRESERVAÇÃO DE PROJETOS: mantenha todos os projetos do currículo original. Não descarte projetos nem corte suas descrições; você pode apenas ajustar a ordem para priorizar os mais relevantes.
+7. PRESERVAÇÃO EXATA DE NOMES DE SEÇÃO: NÃO altere, traduza ou normalize os títulos das seções do currículo. Use EXATAMENTE os nomes listados abaixo como títulos de cada seção no JSON gerado (campo `category` para skills, e os campos de estrutura do ResumeData para as demais seções). Se o currículo original usa "Formação Acadêmica", NÃO gire "Educação" — preserve o termo original.
 
 NOMES EXATOS DAS SEÇÕES (use estes valores ao gerar o JSON):
 - Resumo Profissional (campo: summary)
@@ -622,7 +638,12 @@ Gere o currículo adaptado seguindo estritamente a estrutura ResumeData."""
 
     try:
         dados_json = json.loads(response.text)
-        return ResumeData(**dados_json)
+        tailored_resume = ResumeData(**dados_json)
+        # Os projetos estruturados são a fonte completa e confiável; reaplicá-los
+        # evita que a IA omita um item ou corte parte da descrição.
+        if resume_data and resume_data.projects:
+            tailored_resume.projects = resume_data.projects
+        return tailored_resume
     except ValidationError as ve:
         print("\n" + "="*50)
         print("ERRO DE VALIDAÇÃO DO PYDANTIC (ResumeData) COM O GEMINI:")
