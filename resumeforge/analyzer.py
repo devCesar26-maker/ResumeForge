@@ -211,12 +211,13 @@ def _get_groq_client() -> Groq:
 
 
 def _gemini_config(**kwargs) -> types.GenerateContentConfig:
-    """Config padrão: desativa o 'thinking' dos modelos Gemini 2.5/3.x.
+    """Config padrão para chamadas ao Gemini.
 
-    O raciocínio interno é o maior componente de latência na análise e,
-    para verificaçãs determinísticas via JSON schema, não agrega qualidade.
+    Nota: thinking_config=ThinkingConfig(thinking_budget=0) causa
+    INVALID_ARGUMENT em modelos que usam response_schema (ex: gemini-3.5-flash-lite).
+    Por isso NÃO definimos thinking_config como padrão — o modelo usa seu
+    comportamento natural, que já é rápido e preciso para JSON estruturado.
     """
-    kwargs.setdefault('thinking_config', types.ThinkingConfig(thinking_budget=0))
     return types.GenerateContentConfig(**kwargs)
 
 
