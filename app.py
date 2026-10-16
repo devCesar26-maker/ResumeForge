@@ -1,6 +1,7 @@
 """Backend da Aplicação Web ResumeForge (Flask)."""
 
 import time
+import uuid
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -149,16 +150,16 @@ def api_generate_resume():
         tailored_data = generate_tailored_resume(raw_resume, job, match, resume_data)
         
         company_slug = "".join(c for c in job.company if c.isalnum()).lower()
-        word_path = generate_word(tailored_data, f"cv_{company_slug}")
-        
-        response = jsonify({
-            'success': True,
-            'files': {
-                'word': f'/download/{word_path.name}',
-            }
-        })
-        
-        return response
+        # Cada geração recebe um nome exclusivo e o arquivo é enviado nesta
+        # mesma resposta. Assim o download não depende de uma segunda requisição
+        # cair na mesma instância (o disco local do Render não é compartilhado).
+        word_path = generate_word(tailored_data, f"cv_{company_slug}_{uuid.uuid4().hex}")
+        return send_file(
+            word_path,
+            as_attachment=True,
+            download_name=f"curriculo_{company_slug or 'otimizado'}.docx",
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
         
     except Exception as e:
         print(f"\n[Erro Geração de Currículo]: {e}")

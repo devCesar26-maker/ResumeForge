@@ -200,11 +200,19 @@ function appData() {
                     signal: controller.signal
                 });
                 
-                const data = await response.json();
-                
                 if (response.ok) {
-                    this.generatedResume = data;
+                    const fileBlob = await response.blob();
+                    const downloadUrl = URL.createObjectURL(fileBlob);
+                    const link = document.createElement('a');
+                    link.href = downloadUrl;
+                    link.download = 'curriculo_otimizado.docx';
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    URL.revokeObjectURL(downloadUrl);
+                    this.generatedResume = { success: true };
                 } else {
+                    const data = await response.json();
                     alert('Erro ao gerar currículo: ' + data.error);
                 }
             } catch (error) {
